@@ -1,0 +1,14 @@
+{# Top dark navbar — include once per admin console page #}
+<nav class="navbar super-nav navbar-expand-lg py-3">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand fw-bold text-white" href="{% url 'dashboard' %}">
+      <i class="bi bi-shield-lock-fill me-2"></i>{{ kiosk_system_name }}
+    </a>
+    <form id="logoutForm" method="post" action="{% url 'admin_logout' %}" style="display: inline;">
+      {% csrf_token %}
+      <button type="button" id="logoutBtn" class="btn btn-danger rounded-pill px-4">
+        <i class="bi bi-box-arrow-right me-1"></i>Logout
+      </button>
+    </form>
+  </div>
+</nav>

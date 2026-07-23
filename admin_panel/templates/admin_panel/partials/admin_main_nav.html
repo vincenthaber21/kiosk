@@ -1,0 +1,183 @@
+{# Main admin console nav. Pass nav_active: dashboard | inventory | members | transactions | refunds #}
+<style>
+  .admin-nav-members-dropdown .dropdown-toggle::after,
+  .admin-nav-inventory-dropdown .dropdown-toggle::after {
+    margin-left: 0.35rem;
+    vertical-align: 0.15em;
+  }
+  .admin-nav-members-menu,
+  .admin-nav-inventory-menu {
+    min-width: 17rem;
+    border-radius: 14px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+    padding: 0.35rem;
+  }
+  .admin-nav-members-menu .dropdown-header,
+  .admin-nav-inventory-menu .dropdown-header {
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #64748b;
+    padding: 0.45rem 0.75rem 0.25rem;
+  }
+  .admin-nav-members-menu .dropdown-item,
+  .admin-nav-inventory-menu .dropdown-item {
+    border-radius: 10px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.9rem;
+    white-space: normal;
+  }
+  .admin-nav-members-menu .dropdown-item small,
+  .admin-nav-inventory-menu .dropdown-item small {
+    display: block;
+    color: #64748b;
+    font-size: 0.78rem;
+    margin-top: 0.1rem;
+    font-weight: 400;
+  }
+  .admin-nav-members-menu .dropdown-item:hover,
+  .admin-nav-members-menu .dropdown-item:focus,
+  .admin-nav-inventory-menu .dropdown-item:hover,
+  .admin-nav-inventory-menu .dropdown-item:focus {
+    background: #ecfdf5;
+    color: #00A651;
+  }
+  .admin-nav-members-menu .dropdown-item-credit i {
+    color: #5b21b6;
+  }
+  .admin-nav-inventory-menu .dropdown-item-alert i {
+    color: #ea580c;
+  }
+  .admin-nav-inventory-menu .dropdown-item-discount i {
+    color: #00A651;
+  }
+</style>
+<div class="d-flex gap-2 flex-wrap mb-4 admin-main-nav">
+  <a href="{% url 'dashboard' %}" class="btn {% if nav_active == 'dashboard' %}btn-success active{% else %}btn-outline-success{% endif %} rounded-pill px-4">
+    <i class="bi bi-speedometer2 me-1"></i> Dashboard
+  </a>
+  <div class="dropdown admin-nav-inventory-dropdown">
+    <button
+      type="button"
+      class="btn {% if nav_active == 'inventory' %}btn-success active{% else %}btn-outline-success{% endif %} rounded-pill px-4 dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-expanded="false"
+      aria-label="Inventory menu"
+    >
+      <i class="bi bi-box-seam me-1"></i> Inventory
+    </button>
+    <ul class="dropdown-menu admin-nav-inventory-menu">
+      <li><h6 class="dropdown-header">Inventory</h6></li>
+      <li>
+        <a class="dropdown-item" href="{% url 'inventory_management' %}#inventory-products-section">
+          <i class="bi bi-box-seam me-2"></i>All Products
+          <small>Browse and manage the product catalog</small>
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item" href="{% url 'inventory_management' %}#inventory-categories-section">
+          <i class="bi bi-tags me-2"></i>Categories
+          <small>View and edit product categories</small>
+        </a>
+      </li>
+      <li><hr class="dropdown-divider my-1"></li>
+      <li><h6 class="dropdown-header">Stock alerts</h6></li>
+      <li>
+        <a class="dropdown-item dropdown-item-alert" href="{% url 'inventory_management' %}?filter=low_stock#inventory-products-section">
+          <i class="bi bi-exclamation-triangle me-2"></i>Low Stock
+          <small>Products below the restock threshold</small>
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item dropdown-item-alert" href="{% url 'inventory_management' %}?filter=out_of_stock#inventory-products-section">
+          <i class="bi bi-x-octagon me-2"></i>Out of Stock
+          <small>Products with zero quantity</small>
+        </a>
+      </li>
+      <li><hr class="dropdown-divider my-1"></li>
+      <li><h6 class="dropdown-header">Discounts</h6></li>
+      <li>
+        <a class="dropdown-item dropdown-item-discount" href="{% url 'inventory_discount_dashboard' %}">
+          <i class="bi bi-percent me-2"></i>Discount insights
+          <small>Charts and reports for product discounts</small>
+        </a>
+      </li>
+    </ul>
+  </div>
+
+  <div class="dropdown admin-nav-members-dropdown">
+    <button
+      type="button"
+      class="btn {% if nav_active == 'members' %}btn-success active{% else %}btn-outline-success{% endif %} rounded-pill px-4 dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-expanded="false"
+      aria-label="Members menu"
+    >
+      <i class="bi bi-people-fill me-1"></i> Members
+    </button>
+    <ul class="dropdown-menu admin-nav-members-menu">
+      <li><h6 class="dropdown-header">Members</h6></li>
+      <li>
+        <a class="dropdown-item" href="{% url 'member_management' %}#all-members-section">
+          <i class="bi bi-people me-2"></i>All Members
+          <small>Browse and manage accounts</small>
+        </a>
+      </li>
+      <li><hr class="dropdown-divider my-1"></li>
+      <li><h6 class="dropdown-header">Credit (Utang)</h6></li>
+      <li>
+        <a class="dropdown-item dropdown-item-credit" href="{% url 'member_management' %}#member-credit-summary">
+          <i class="bi bi-journal-text me-2"></i>Credit Overview
+          <small>Total owed and summary stats</small>
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item dropdown-item-credit" href="{% url 'member_management' %}?credit=owed#all-members-section">
+          <i class="bi bi-person-lines-fill me-2"></i>Members with Credit
+          <small>Filter list to unpaid utang only</small>
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item dropdown-item-credit" href="{% url 'member_management' %}?credit=owed#all-members-section">
+          <i class="bi bi-cash-coin me-2"></i>Pay Member Credit
+          <small>Settle utang — use Pay Credit on each row</small>
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item dropdown-item-credit" href="{% url 'transaction_history' %}?payment_method=credit">
+          <i class="bi bi-receipt me-2"></i>Credit Sales
+          <small>Transactions paid on credit</small>
+        </a>
+      </li>
+      <li><hr class="dropdown-divider my-1"></li>
+      <li>
+        <a class="dropdown-item" href="#" data-open-credit-limit-modal>
+          <i class="bi bi-sliders me-2"></i>Credit Limit Settings
+          <small>Max utang per member (kiosk)</small>
+        </a>
+      </li>
+    </ul>
+  </div>
+
+  <a href="{% url 'transaction_history' %}" class="btn {% if nav_active == 'transactions' %}btn-success active{% else %}btn-outline-success{% endif %} rounded-pill px-4">
+    <i class="bi bi-receipt me-1"></i> Transactions
+  </a>
+  <a href="{% url 'process_refund' %}" class="btn {% if nav_active == 'refunds' %}btn-success active{% else %}btn-outline-success{% endif %} rounded-pill px-4">
+    <i class="bi bi-arrow-counterclockwise me-1"></i> Refunds
+  </a>
+  {% if is_admin_user %}
+  <a href="{% url 'staff_sales_report' %}" class="btn {% if nav_active == 'staff_sales' %}btn-success active{% else %}btn-outline-success{% endif %} rounded-pill px-4">
+    <i class="bi bi-person-badge me-1"></i> Staff Sales
+  </a>
+  {% endif %}
+  <a href="{% url 'kiosk_home' %}" class="btn btn-outline-success rounded-pill px-4">
+    <i class="bi bi-cart3 me-1"></i> Buy Items
+  </a>
+  <button type="button" class="btn btn-outline-success rounded-pill px-4" data-bs-toggle="modal" data-bs-target="#refillBalanceModal">
+    <i class="bi bi-wallet2 me-1"></i> Refill Card Balance
+  </button>
+  <button type="button" class="btn btn-outline-success rounded-pill px-4" data-bs-toggle="modal" data-bs-target="#generateReportModal">
+    <i class="bi bi-file-earmark-bar-graph me-1"></i> Generate Report
+  </button>
+</div>
