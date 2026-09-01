@@ -4,17 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Super Admin Console | {{ kiosk_system_name }}</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  {% include "partials/bootstrap_head.html" %}
+  {% include "partials/chartjs_scripts.html" %}
   <style>
     :root {
       --dark: #0f172a;
-      --brand: #F58220;
-      --accent: #00A651;
+      --brand: #ED1C24;
+      --accent: #E6C200;
       --muted: #94a3b8;
       --panel: #ffffff;
-      --gradient: linear-gradient(135deg, #F58220 0%, #E06B00 40%, #00A651 100%);
+      --gradient: linear-gradient(135deg, #ED1C24 0%, #C4121A 40%, #8B0E14 100%);
     }
 
     body {
@@ -330,14 +329,14 @@
     }
 
     .period-tab:hover {
-      background: rgba(245, 130, 32, 0.12);
-      color: #F58220;
+      background: rgba(237, 28, 36, 0.12);
+      color: #ED1C24;
     }
 
     .period-tab--active {
-      background: #F58220;
+      background: #ED1C24;
       color: #fff !important;
-      box-shadow: 0 2px 8px rgba(245, 130, 32, 0.35);
+      box-shadow: 0 2px 8px rgba(237, 28, 36, 0.35);
     }
 
     .period-tab--active:hover {
@@ -354,7 +353,7 @@
 
     .period-picker-input {
       position: relative;
-      border: 1.5px solid #F58220;
+      border: 1.5px solid #ED1C24;
       border-radius: 999px;
       font-size: 0.85rem;
       color: #0f172a;
@@ -422,8 +421,8 @@
 
     .period-picker-input:focus {
       outline: none;
-      box-shadow: 0 0 0 3px rgba(245, 130, 32, 0.2);
-      border-color: #F58220;
+      box-shadow: 0 0 0 3px rgba(237, 28, 36, 0.2);
+      border-color: #ED1C24;
     }
 
     @media (max-width: 575.98px) {
@@ -623,7 +622,7 @@
         margin: 0;
       }
       #logoutConfirmModal .modal-header .modal-title i {
-        color: #F58220;
+        color: #ED1C24;
         font-size: 1.8rem;
       }
       #logoutConfirmModal .modal-body {
@@ -632,7 +631,7 @@
       }
       #logoutConfirmModal .modal-body .warning-icon {
         font-size: 4rem;
-        color: #F58220;
+        color: #ED1C24;
         margin-bottom: 20px;
         display: block;
       }
@@ -671,15 +670,15 @@
         box-shadow: 0 4px 12px rgba(108, 117, 125, 0.3);
       }
       #logoutConfirmModal .modal-footer .btn-confirm {
-        background: linear-gradient(135deg, #F58220, #E06B00);
-        border: 2px solid #F58220;
+        background: linear-gradient(135deg, #ED1C24, #C4121A);
+        border: 2px solid #ED1C24;
         color: white;
       }
       #logoutConfirmModal .modal-footer .btn-confirm:hover {
-        background: linear-gradient(135deg, #E06B00, #D96B00);
-        border-color: #D96B00;
+        background: linear-gradient(135deg, #C4121A, #A10F16);
+        border-color: #A10F16;
         transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(245, 130, 32, 0.4);
+        box-shadow: 0 4px 12px rgba(237, 28, 36, 0.4);
       }
 
       @media (max-width: 992px) {
@@ -841,11 +840,11 @@
     .top-product-card .tp-metric-val {
       font-size: 0.88rem;
       font-weight: 700;
-      color: #F58220;
+      color: #ED1C24;
       line-height: 1.2;
     }
     .top-product-card .tp-metric-val.tp-rev {
-      color: #00A651;
+      color: #E6C200;
       font-size: 0.82rem;
     }
     </style>
@@ -856,7 +855,7 @@
   <main class="container-fluid px-4 py-5">
     <section class="hero-card mb-4">
       <div class="row align-items-center g-4">
-        <div class="col-lg-8">
+        <div class="col-12">
           <p class="mb-2 text-uppercase fw-semibold" style="letter-spacing:0.2em;">Command Center</p>
           <h1 class="fw-bold mb-2">Hello, {{ user_display_name|default:"Admin" }} 👋{% include 'admin_panel/partials/admin_role_badge.html' %}
           </h1>
@@ -867,12 +866,6 @@
             <span class="chip"><i class="bi bi-lightning-charge-fill me-1"></i> Today: ₱{{ today_revenue|floatformat:2 }}</span>
             <span class="chip"><i class="bi bi-receipt-cutoff me-1"></i> {{ today_transactions }} transactions</span>
             <span class="chip"><i class="bi bi-graph-up-arrow me-1"></i> Total ₱{{ all_time_revenue|floatformat:2 }}</span>
-          </div>
-        </div>
-        <div class="col-lg-4 d-flex gap-3 justify-content-lg-end flex-wrap">
-          <div class="hero-metric">
-            <small class="text-uppercase text-white-50">Members</small>
-            <h3 class="mb-0">{{ total_members }}</h3>
           </div>
         </div>
       </div>
@@ -1152,7 +1145,7 @@
       <div class="col d-flex">
         <div class="stat-card w-100">
           <div class="d-flex align-items-center gap-3 flex-wrap flex-sm-nowrap">
-            <div class="stat-icon flex-shrink-0" style="background:#F58220;"><i class="bi bi-cash-stack"></i></div>
+            <div class="stat-icon flex-shrink-0" style="background:#ED1C24;"><i class="bi bi-cash-stack"></i></div>
             <div class="stat-kpi-row">
               <div class="stat-title">Total Revenue</div>
               <h3 class="mb-0 stat-kpi-value" id="kpiTotalRevenue">₱{{ total_revenue|floatformat:2 }}</h3>
@@ -1164,7 +1157,7 @@
       <div class="col d-flex">
         <div class="stat-card w-100">
           <div class="d-flex align-items-center gap-3 flex-wrap flex-sm-nowrap">
-            <div class="stat-icon flex-shrink-0" style="background:#00A651;"><i class="bi bi-bar-chart-line"></i></div>
+            <div class="stat-icon flex-shrink-0" style="background:#FFF200;color:#111;"><i class="bi bi-bar-chart-line"></i></div>
             <div class="stat-kpi-row">
               <div class="stat-title">Transactions</div>
               <h3 class="mb-0 stat-kpi-value" id="kpiTotalTransactions">{{ total_transactions }}</h3>
@@ -1223,7 +1216,7 @@
           <div class="d-flex justify-content-between align-items-start mb-4">
             <div class="flex-grow-1">
               <div class="d-flex align-items-center gap-2 mb-2">
-                <div class="stat-icon" style="background: linear-gradient(135deg, #F58220 0%, #00A651 100%); width: 40px; height: 40px; font-size: 1.1rem;">
+                <div class="stat-icon" style="background: linear-gradient(135deg, #ED1C24 0%, #C4121A 100%); width: 40px; height: 40px; font-size: 1.1rem;">
                   <i class="bi bi-graph-up-arrow"></i>
                 </div>
                 <div>
@@ -1341,7 +1334,7 @@
                   <th class="text-end">Amount</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody id="recentRefundsBody">
                 {% for refund in recent_refunds %}
                 <tr{% if refund.is_partially_refunded %} class="refund-partial-row"{% endif %}>
                   <td class="fw-semibold">
@@ -1353,7 +1346,7 @@
                     {% endif %}
                   </td>
                   <td>{{ refund.member_name|default:"Guest" }}</td>
-                  <td><small>{{ refund.refunded_at|date:"M d, Y H:i" }}</small></td>
+                  <td><small>{{ refund.refunded_at }}</small></td>
                   <td class="text-end">
                     <span class="fw-semibold text-danger">₱{{ refund.refund_amount|floatformat:2 }}</span>
                     {% if refund.is_partially_refunded %}
@@ -1362,7 +1355,7 @@
                   </td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="4" class="text-center text-muted py-4">No refunds yet</td></tr>
+                <tr><td colspan="4" class="text-center text-muted py-4">No refunds for this period</td></tr>
                 {% endfor %}
               </tbody>
             </table>
@@ -1677,8 +1670,6 @@
   </main>
 
   {% include 'admin_panel/partials/footer.html' %}
-
-  {% include 'admin_panel/partials/admin_nav_support.html' %}
 
   <script>
     // Data injected from server as JSON
@@ -2014,6 +2005,40 @@
       window.addEventListener('resize', scheduleTopProductsRelayout);
     }
 
+    function updateRecentRefunds(payload) {
+      const tbody = document.getElementById('recentRefundsBody');
+      if (!tbody) return;
+      const rows = Array.isArray(payload.recent_refunds) ? payload.recent_refunds : [];
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">No refunds for this period</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = rows.map((refund) => {
+        const partial = !!refund.is_partially_refunded;
+        const rowClass = partial ? ' class="refund-partial-row"' : '';
+        const balanceBadge = partial
+          ? ` <span class="refund-partial-badge" title="Not fully refunded — sale still has a remaining balance">
+                <i class="bi bi-exclamation-circle" aria-hidden="true"></i> Has balance
+              </span>`
+          : '';
+        const remaining = partial && refund.remaining_balance != null
+          ? `<span class="refund-remaining-balance">Balance ${formatPeso(refund.remaining_balance)}</span>`
+          : '';
+        return `
+          <tr${rowClass}>
+            <td class="fw-semibold">${escapeHtml(refund.transaction_number)}${balanceBadge}</td>
+            <td>${escapeHtml(refund.member_name || 'Guest')}</td>
+            <td><small>${escapeHtml(refund.refunded_at || '')}</small></td>
+            <td class="text-end">
+              <span class="fw-semibold text-danger">${formatPeso(refund.refund_amount)}</span>
+              ${remaining}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
     function updateRecentTransactions(payload) {
       const tbody = document.getElementById('recentTransactionsBody');
       if (!tbody) return;
@@ -2137,6 +2162,7 @@
         updatePeriodLabels(rangeLabel);
         updateKpiCards(payload);
         updateRecentTransactions(payload);
+        updateRecentRefunds(payload);
         updateWalkInInsights(payload);
         updateOperationalInsights(payload);
         updateTopProducts(payload);
@@ -2193,9 +2219,9 @@
           const wrapperHeight = wrapper ? wrapper.clientHeight : 240;
 
           const salesGradient = createGradient(salesCtx, [
-            { position: 0, color: 'rgba(245,130,32,0.4)' },
-            { position: 0.5, color: 'rgba(245,130,32,0.15)' },
-            { position: 1, color: 'rgba(245,130,32,0)' }
+            { position: 0, color: 'rgba(237,28,36,0.4)' },
+            { position: 0.5, color: 'rgba(237,28,36,0.15)' },
+            { position: 1, color: 'rgba(237,28,36,0)' }
           ], wrapperHeight);
 
           salesTrendChartInstance = new Chart(salesCtx, {
@@ -2206,16 +2232,16 @@
                 label: 'Revenue',
                 data: normDailyTotals.length > 0 ? normDailyTotals : [0],
                 tension: 0.5,
-                borderColor: '#F58220',
+                borderColor: '#ED1C24',
                 backgroundColor: salesGradient,
                 borderWidth: 3,
                 fill: true,
                 pointRadius: 5,
                 pointBackgroundColor: '#ffffff',
-                pointBorderColor: '#F58220',
+                pointBorderColor: '#ED1C24',
                 pointBorderWidth: 3,
                 pointHoverRadius: 8,
-                pointHoverBackgroundColor: '#F58220',
+                pointHoverBackgroundColor: '#ED1C24',
                 pointHoverBorderColor: '#ffffff',
                 pointHoverBorderWidth: 3
               }]
@@ -2241,7 +2267,7 @@
                   },
                   titleColor: '#ffffff',
                   bodyColor: '#ffffff',
-                  borderColor: '#F58220',
+                  borderColor: '#ED1C24',
                   borderWidth: 2,
                   cornerRadius: 8,
                   displayColors: false,
@@ -2849,9 +2875,9 @@
               const wrapperHeight = wrapper ? wrapper.clientHeight : window.innerHeight - 150;
               const salesCtx = salesTrendChartInstance.canvas.getContext('2d');
               const salesGradient = createGradient(salesCtx, [
-                { position: 0, color: 'rgba(245,130,32,0.4)' },
-                { position: 0.5, color: 'rgba(245,130,32,0.15)' },
-                { position: 1, color: 'rgba(245,130,32,0)' }
+                { position: 0, color: 'rgba(237,28,36,0.4)' },
+                { position: 0.5, color: 'rgba(237,28,36,0.15)' },
+                { position: 1, color: 'rgba(237,28,36,0)' }
               ], wrapperHeight);
               
               // Update the dataset background color
@@ -2877,9 +2903,9 @@
               const wrapperHeight = 280;
               const salesCtx = salesTrendChartInstance.canvas.getContext('2d');
               const salesGradient = createGradient(salesCtx, [
-                { position: 0, color: 'rgba(245,130,32,0.4)' },
-                { position: 0.5, color: 'rgba(245,130,32,0.15)' },
-                { position: 1, color: 'rgba(245,130,32,0)' }
+                { position: 0, color: 'rgba(237,28,36,0.4)' },
+                { position: 0.5, color: 'rgba(237,28,36,0.15)' },
+                { position: 1, color: 'rgba(237,28,36,0)' }
               ], wrapperHeight);
               
               // Update the dataset background color
@@ -3024,7 +3050,7 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-  {% include 'admin_panel/partials/admin_nav_support_js.html' %}
+  {% include "partials/bootstrap_scripts.html" %}
+  {% include 'admin_panel/partials/admin_nav_footer.html' %}
 </body>
 </html>

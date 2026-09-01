@@ -904,7 +904,7 @@
                             {% for item in transaction.items.all %}
                             <tr>
                                 <td><span class="item-name">{{ item.product_name }}</span></td>
-                                <td><span class="item-qty">×{{ item.quantity }}</span></td>
+                                <td><span class="item-qty">×{{ item.quantity_display }}</span></td>
                                 <td>₱{{ item.total_price|currency }}</td>
                             </tr>
                             {% endfor %}
@@ -1093,7 +1093,7 @@
                             {% for item in transaction.items.all %}
                             <tr>
                                 <td><span class="item-name">{{ item.product_name }}</span></td>
-                                <td><span class="item-qty">×{{ item.quantity }}</span></td>
+                                <td><span class="item-qty">×{{ item.quantity_display }}</span></td>
                                 <td>₱{{ item.total_price|currency }}</td>
                             </tr>
                             {% endfor %}
@@ -1188,7 +1188,7 @@
 
     </div><!-- /page-wrapper -->
 
-    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+    {% include "partials/jsbarcode_scripts.html" %}
     <script>
         // ── Navigation helper ───────────────────────
         // If this page is open as a popup (window.opener exists),

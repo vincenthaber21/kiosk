@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     'crispy_bootstrap5',
     'widget_tweaks',
     'import_export',
+    'django_fsm',
     'members',
     'inventory',
     'transactions',
@@ -75,6 +76,10 @@ INSTALLED_APPS = [
     'admin_panel',
     'mobile_api',
     'ingestion',
+    'loans',
+    'savings',
+    'share_capital',
+    'palay_trade',
 ]
 
 MIDDLEWARE = [
@@ -87,7 +92,9 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',  # Must be before SecureAdminMiddleware
+    'admin_panel.middleware.CommitteeLoanOnlyMiddleware',  # Committee + loan officer: loans only
     'admin_panel.middleware.SecureAdminMiddleware',  # Secure admin panel access (after MessageMiddleware)
+    'admin_panel.middleware.WebsiteAuditMiddleware',  # Site-wide activity audit (admin monitor)
     'mobile_api.middleware.BrokenPipeHandlerMiddleware',  # Handle broken pipes gracefully (should be last)
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -107,6 +114,8 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
                 'django.template.context_processors.media',
                 'admin_panel.context_processors.kiosk_branding',
+                'admin_panel.context_processors.pending_loan_requests',
+                'admin_panel.context_processors.committee_access',
             ],
         },
     },
@@ -132,6 +141,10 @@ else:
             'PASSWORD': 'root',
             'HOST': '127.0.0.1',
             'PORT': '3307',
+            # Recycle before MySQL wait_timeout; health-check drops dead sockets
+            # (avoids "MySQL server has gone away" in long-lived scheduler threads).
+            'CONN_MAX_AGE': 300,
+            'CONN_HEALTH_CHECKS': True,
             'OPTIONS': {
                 'connect_timeout': 20,
                 'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
@@ -276,12 +289,12 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
 EMAIL_PORT = int(os.environ.get('MAIL_PORT', '587'))
 EMAIL_USE_TLS = os.environ.get('MAIL_USE_TLS', 'True').lower() == 'true'
-EMAIL_HOST_USER = os.environ.get('MAIL_USERNAME', 'bsnmpckat@gmail.com')
-EMAIL_HOST_PASSWORD = os.environ.get('MAIL_PASSWORD', 'okfb xdir tyvl ocbb')
-DEFAULT_FROM_EMAIL = os.environ.get('MAIL_DEFAULT_SENDER', 'CARP- COMPREHENSIVE AGRARIAN REFORM PROGRAM <bsnmpckat@gmail.com>')
+EMAIL_HOST_USER = os.environ.get('MAIL_USERNAME', 'mpcbagnos@gmail.com')
+EMAIL_HOST_PASSWORD = os.environ.get('MAIL_PASSWORD', 'xbra ayiu dajf aano')
+DEFAULT_FROM_EMAIL = os.environ.get('MAIL_DEFAULT_SENDER', 'BAGNOS MPC <mpcbagnos@gmail.com>')
 
 # Daily Report Email Configuration - Admin email that receives daily reports
-ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'bsnmpckat@gmail.com')
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'mpcbagnos@gmail.com')
 DAILY_REPORT_EMAIL = os.environ.get('DAILY_REPORT_EMAIL', ADMIN_EMAIL)
 
 

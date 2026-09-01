@@ -24,6 +24,7 @@ from kiosk import views as kiosk_views
 from admin_panel import views as admin_panel_views
 from admin_panel.data_transfer_views import get_data_transfer_urls
 from members import views as members_views
+from loans.views import LoanSettingsView
 
 
 def handler404(request, exception=None):
@@ -81,6 +82,11 @@ urlpatterns = [
     path('api/rfid-validate-login/', members_views.api_validate_rfid_login, name='api_rfid_validate_login'),
     path('kiosk/logout/', admin_panel_views.kiosk_logout, name='kiosk_logout'),
     path('dashboard/', admin_panel_views.dashboard, name='dashboard'),
+    path('dashboard/loans/', admin_panel_views.loans_overview, name='loans_overview'),
+    path('dashboard/loans/settings/', LoanSettingsView.as_view(), name='loan_settings'),
+    path('dashboard/savings/', include('savings.urls')),
+    path('dashboard/share-capital/', include('share_capital.urls')),
+    path('dashboard/palay/', include('palay_trade.urls')),
     path('api/dashboard/period-data/', admin_panel_views.api_dashboard_period_data, name='api_dashboard_period_data'),
     path(
         'admin/inventory/',
@@ -88,6 +94,11 @@ urlpatterns = [
         name='admin_inventory_redirect',
     ),
     path('dashboard/inventory/', admin_panel_views.inventory_management, name='inventory_management'),
+    path(
+        'api/inventory/send-stock-alerts/',
+        admin_panel_views.api_send_inventory_stock_alerts,
+        name='api_send_inventory_stock_alerts',
+    ),
     # Per-product stock change history (old/new stock, sold qty) for the History modal
     path(
         'api/inventory/product/<int:product_id>/stock-history/',
@@ -128,9 +139,15 @@ urlpatterns = [
         name='export_inventory_manual_discount_report',
     ),
     path('dashboard/members/', admin_panel_views.member_management, name='member_management'),
+    path('dashboard/members/credit-history/', admin_panel_views.credit_unpaid_history, name='credit_unpaid_history'),
     path('dashboard/members/backup/', admin_panel_views.backup_members_data, name='backup_members_data'),
     path('dashboard/members/restore/', admin_panel_views.restore_members_data, name='restore_members_data'),
     path('dashboard/transactions/', admin_panel_views.transaction_history, name='transaction_history'),
+    path(
+        'dashboard/transactions/export/',
+        admin_panel_views.export_transaction_history,
+        name='export_transaction_history',
+    ),
     path(
         'api/mark-balance-refills-seen/',
         admin_panel_views.api_mark_balance_refills_seen,
@@ -140,6 +157,7 @@ urlpatterns = [
     path('api/members/generate-username/', admin_panel_views.api_generate_username, name='api_generate_username'),
     path('api/members/create/', admin_panel_views.api_create_member, name='api_create_member'),
     path('api/members/update/', admin_panel_views.api_update_member, name='api_update_member'),
+    path('api/members/verify-edit-pin/', admin_panel_views.api_verify_member_edit_pin, name='api_verify_member_edit_pin'),
     path('api/members/reset-pin-attempts/', admin_panel_views.api_reset_pin_attempts, name='api_reset_pin_attempts'),
     path('api/members/last-edit/', admin_panel_views.api_get_member_last_edit, name='api_get_member_last_edit'),
     path('api/members/restore-last-edit/', admin_panel_views.api_restore_member_last_edit, name='api_restore_member_last_edit'),
@@ -154,6 +172,7 @@ urlpatterns = [
     ),
     path('api/products/create/', admin_panel_views.api_create_product, name='api_create_product'),
     path('api/products/update/', admin_panel_views.api_update_product, name='api_update_product'),
+    path('api/products/delete/', admin_panel_views.api_delete_product, name='api_delete_product'),
     path('api/products/search-giveaway/', admin_panel_views.api_search_giveaway_products, name='api_search_giveaway_products'),
     path('api/products/record-giveaway/', admin_panel_views.api_record_giveaway, name='api_record_giveaway'),
     path('api/giveaways/list/', admin_panel_views.api_list_giveaways, name='api_list_giveaways'),
@@ -163,6 +182,7 @@ urlpatterns = [
     path('api/categories/update/', admin_panel_views.api_update_category, name='api_update_category'),
     path('api/refill-balance/', admin_panel_views.api_refill_balance, name='api_refill_balance'),
     path('api/kiosk/credit-limit/', admin_panel_views.api_kiosk_credit_limit, name='api_kiosk_credit_limit'),
+    path('api/credit/settings/', admin_panel_views.api_credit_settings, name='api_credit_settings'),
     path('api/members/credit-details/', admin_panel_views.api_member_credit_details, name='api_member_credit_details'),
     path('api/members/pay-credit/', admin_panel_views.api_pay_member_credit, name='api_pay_member_credit'),
     path(
@@ -173,6 +193,9 @@ urlpatterns = [
     path('api/rfid-login/', admin_panel_views.api_rfid_login, name='api_rfid_login'),
     path('user-choice/', admin_panel_views.user_choice, name='user_choice'),
     path('user-transactions/', admin_panel_views.user_transactions, name='user_transactions'),
+    path('member/loans/', include('loans.member_urls')),
+    path('member/savings/', include('savings.member_urls')),
+    path('member/palay/', include('palay_trade.member_urls')),
     path('process-refund/', admin_panel_views.process_refund, name='process_refund'),
     path('api/search-transactions-for-refund/', admin_panel_views.api_search_transactions_for_refund, name='api_search_transactions_for_refund'),
     path('api/process-refund/', admin_panel_views.api_process_refund, name='api_process_refund'),
@@ -180,6 +203,7 @@ urlpatterns = [
     path('api/get-transaction/<int:transaction_id>/', admin_panel_views.api_get_transaction, name='api_get_transaction'),
     path('api/void-transaction-item/', admin_panel_views.api_void_transaction_item, name='api_void_transaction_item'),
     path('api/update-transaction/', admin_panel_views.api_update_transaction, name='api_update_transaction'),
+    path('api/delete-transaction/', admin_panel_views.api_delete_transaction, name='api_delete_transaction'),
     path('api/confirm-return/', admin_panel_views.api_confirm_return, name='api_confirm_return'),
     path('api/expire-return-window/', admin_panel_views.api_expire_return_window, name='api_expire_return_window'),
     path('refund-receipt/<int:transaction_id>/', admin_panel_views.view_refund_receipt, name='view_refund_receipt'),
@@ -199,12 +223,15 @@ urlpatterns = [
         admin_panel_views.export_staff_sales_detail,
         name='export_staff_sales_detail',
     ),
+    path('dashboard/audit/', admin_panel_views.website_audit_trail, name='website_audit_trail'),
     path('dashboard/generate-report/', admin_panel_views.generate_daily_report_pdf, name='generate_daily_report_pdf'),
     path('dashboard/inventory/download-barcodes/', admin_panel_views.download_product_barcodes_pdf, name='download_product_barcodes_pdf'),
     # Mobile API endpoints
     path('api/mobile/', include('mobile_api.urls')),
     # High-throughput ingestion pipeline
     path('api/ingest/', include('ingestion.urls')),
+    # Cooperative loan pipeline (13-step credit workflow + official receipts)
+    path('dashboard/loans/steps/', include('loans.urls')),
 ]
 
 if settings.DEBUG:

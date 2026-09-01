@@ -10,11 +10,13 @@ from .models import (
     DeletedMember,
     Member,
     MemberEditHistory,
+    MemberStatus,
     MemberType,
     PWDProfile,
     Role,
     SegmentProductGroupDiscount,
     SeniorCitizenProfile,
+    ShareCapitalTransaction,
 )
 from inventory.models import ProductDiscountGroup
 
@@ -22,6 +24,16 @@ from inventory.models import ProductDiscountGroup
 class RoleResource(resources.ModelResource):
     class Meta:
         model = Role
+        fields = ('id', 'slug', 'name', 'sort_order', 'is_active')
+        export_order = fields
+        import_id_fields = ('slug',)
+        skip_unchanged = True
+        report_skipped = True
+
+
+class MemberStatusResource(resources.ModelResource):
+    class Meta:
+        model = MemberStatus
         fields = ('id', 'slug', 'name', 'sort_order', 'is_active')
         export_order = fields
         import_id_fields = ('slug',)
@@ -56,6 +68,11 @@ class MemberResource(resources.ModelResource):
         attribute='member_role',
         widget=ForeignKeyWidget(Role, field='slug'),
     )
+    member_status = fields.Field(
+        column_name='member_status',
+        attribute='member_status',
+        widget=ForeignKeyWidget(MemberStatus, field='slug'),
+    )
 
     class Meta:
         model = Member
@@ -64,13 +81,47 @@ class MemberResource(resources.ModelResource):
             'username',
             'rfid_card_number',
             'first_name',
+            'middle_name',
             'last_name',
             'email',
             'phone',
+            'barangay',
+            'municipality',
+            'province',
+            'date_of_birth',
+            'age',
+            'gender',
+            'tin',
+            'civil_status',
+            'religion',
+            'educational_attainment',
+            'occupation',
+            'coop_type',
+            'area',
+            'member_status',
+            'membership_status',
+            'location',
+            'rsbsa_remarks',
+            'rsbsa_number',
+            'income_sources',
+            'annual_income',
+            'other_assets',
+            'spouse_name',
+            'spouse_occupation',
+            'date_of_pmes',
+            'resolution_number',
+            'date_accepted',
+            'or_number',
+            'initial_capital_paid_up',
+            'date_of_mf_recog',
+            'mf_center',
             'member_type',
             'member_role',
             'balance',
+            'share_capital',
             'is_active',
+            'inactive_remark',
+            'date_joined',
         )
         export_order = fields
         import_id_fields = ('id',)
@@ -185,6 +236,36 @@ class BalanceTransactionResource(resources.ModelResource):
             row['notes'] = ''
 
 
+class ShareCapitalTransactionResource(resources.ModelResource):
+    member = fields.Field(
+        column_name='member_id',
+        attribute='member',
+        widget=ForeignKeyWidget(Member, field='id'),
+    )
+
+    class Meta:
+        model = ShareCapitalTransaction
+        fields = (
+            'id',
+            'transaction_number',
+            'member',
+            'transaction_type',
+            'amount',
+            'balance_before',
+            'balance_after',
+            'notes',
+            'created_at',
+        )
+        export_order = fields
+        import_id_fields = ('transaction_number',)
+        skip_unchanged = True
+        report_skipped = True
+
+    def before_import_row(self, row, **kwargs):
+        if 'notes' in row and row['notes'] is None:
+            row['notes'] = ''
+
+
 class CardBalanceRefillResource(resources.ModelResource):
     member = fields.Field(
         column_name='member_id',
@@ -227,6 +308,7 @@ class DeletedMemberResource(resources.ModelResource):
             'member_type_name',
             'role',
             'balance',
+            'share_capital',
             'username',
             'deleted_at',
             'deleted_by',

@@ -264,7 +264,7 @@ def _notify_admins_lockout(member) -> None:
                     f"has been locked after {PIN_MAX_ATTEMPTS} failed PIN attempts.\n\n"
                     "Please log in to the admin panel to reset their PIN and unlock the account."
                 ),
-                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@genglo.local"),
+                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "BAGNOS MPC <noreply@bagnosmpc.local>"),
                 recipient_list=admin_emails,
                 fail_silently=True,
             )

@@ -56,6 +56,10 @@ def is_admin_user(user: User) -> bool:
         return False
 
 
+DASHBOARD_STAFF_ROLE_SLUGS = frozenset({"admin", "cashier", "staff"})
+LOAN_OFFICER_ROLE_SLUG = "loan_officer"
+
+
 def is_cashier_or_admin(user: User) -> bool:
     """Return True if *user* has cashier, admin, or staff role (or is superuser / Django staff)."""
     if not user or not user.is_active:
@@ -64,7 +68,31 @@ def is_cashier_or_admin(user: User) -> bool:
         return True
     try:
         member = _get_member_model().objects.get(user=user)
-        return member.role in ("cashier", "admin", "staff") and member.is_active
+        return member.role in DASHBOARD_STAFF_ROLE_SLUGS and member.is_active
+    except Exception:
+        return False
+
+
+def is_loan_officer_only_user(user: User) -> bool:
+    """True when this login is Loan Officer only (no full admin dashboard)."""
+    if not user or not user.is_active or user.is_superuser:
+        return False
+    try:
+        member = _get_member_model().objects.get(user=user)
+        return member.role == LOAN_OFFICER_ROLE_SLUG and member.is_active
+    except Exception:
+        return False
+
+
+def is_loan_officer_user(user: User) -> bool:
+    """Return True for the dedicated Loan Officer role (staff decisions + pipeline)."""
+    if not user or not user.is_active:
+        return False
+    if user.is_superuser:
+        return True
+    try:
+        member = _get_member_model().objects.get(user=user)
+        return member.role == LOAN_OFFICER_ROLE_SLUG and member.is_active
     except Exception:
         return False
 
@@ -106,6 +134,38 @@ def is_cashier_user(user: User) -> bool:
         return member.role == "cashier" and member.is_active
     except Exception:
         return False
+
+
+def is_committee_user(user: User) -> bool:
+    """Return True for Member role 'committee' (credit committee approval)."""
+    if not user or not user.is_active:
+        return False
+    try:
+        member = _get_member_model().objects.get(user=user)
+        return member.role == "committee" and member.is_active
+    except Exception:
+        return False
+
+
+def is_committee_only_user(user: User) -> bool:
+    """True when this login is Credit Committee only (no admin/cashier/staff console)."""
+    if not user or not user.is_active or user.is_superuser:
+        return False
+    return is_committee_user(user)
+
+
+def is_loans_only_user(user: User) -> bool:
+    """Credit committee or loan officer — loan features only, no main dashboard."""
+    return is_committee_only_user(user) or is_loan_officer_only_user(user)
+
+
+def is_loan_desk_user(user: User) -> bool:
+    """Roles that may open the cooperative loan desk (overview and pipeline)."""
+    return (
+        is_cashier_or_admin(user)
+        or is_loan_officer_only_user(user)
+        or is_committee_only_user(user)
+    )
 
 
 def get_linked_member(user: User):
@@ -161,7 +221,7 @@ def can_access_django_admin(user: User) -> bool:
 def get_user_role(user: User) -> str:
     """
     Return a string describing the user's role:
-        'superuser', 'admin', 'cashier', 'staff', 'member', or 'unknown'
+        'superuser', 'admin', 'cashier', 'staff', 'committee', 'member', or 'unknown'
     """
     if not user or not user.is_active:
         return "unknown"
@@ -170,7 +230,7 @@ def get_user_role(user: User) -> str:
     try:
         member = _get_member_model().objects.get(user=user)
         if member.is_active:
-            return member.role  # 'admin', 'cashier', 'staff', 'member'
+            return member.role  # 'admin', 'cashier', 'staff', 'committee', 'member'
     except Exception:
         pass
     return "unknown"
@@ -181,33 +241,43 @@ def get_user_role(user: User) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _DEFAULT_ADMIN_URL = "/dashboard/"
+_DEFAULT_COMMITTEE_URL = "/dashboard/loans/"
 _DEFAULT_USER_URL = "/user-choice/"
+
+
+def _is_safe_next_url(next_url: str) -> bool:
+    """True if next_url is an internal path that is not Django admin."""
+    return bool(next_url) and next_url.startswith("/") and not next_url.startswith("/admin")
 
 
 def resolve_redirect_url(user: User, next_url: str = "") -> str:
     """
     Return the URL the user should land on after a successful login.
 
-    Priority:
-        1. *next_url* if it is a safe internal path (starts with '/', not '/admin/')
-        2. '/dashboard/'  for admin / cashier roles
-        3. '/user-choice/' for all other roles
+    Staff / cashier / admin → /dashboard/ (or a safe next_url).
+    Loan officer / credit committee → /dashboard/loans/ (or a safe next_url).
+    Regular members → /user-choice/ (always show the choice hub after login).
     """
-    # Sanitise next_url — must start with '/' and not point at Django admin
-    if next_url and next_url.startswith("/") and not next_url.startswith("/admin"):
-        return next_url
+    is_staff_login = is_admin_user(user) or is_cashier_or_admin(user)
+    is_loans_only_login = is_loans_only_user(user)
 
-    if is_admin_user(user) or is_cashier_or_admin(user):
+    if is_staff_login:
+        if _is_safe_next_url(next_url):
+            return next_url
         return _DEFAULT_ADMIN_URL
+
+    if is_loans_only_login:
+        if _is_safe_next_url(next_url) and next_url.startswith("/dashboard/loans"):
+            return next_url
+        return _DEFAULT_COMMITTEE_URL
+
     return _DEFAULT_USER_URL
 
 
 def resolve_redirect_url_for_member_only(next_url: str = "") -> str:
     """
-    Return the redirect URL for member-only sessions (no Django User account).
+    Member-only sessions (no Django User) always go to /user-choice/ after login.
     """
-    if next_url and next_url.startswith("/") and not next_url.startswith("/admin"):
-        return next_url
     return _DEFAULT_USER_URL
 
 
@@ -404,7 +474,7 @@ def login_with_credentials(
 
 
 # Role slugs that require a Django User for dashboard / staff flows (PIN + RFID).
-_PRIVILEGED_MEMBER_SLUGS = frozenset({"admin", "cashier", "staff"})
+_PRIVILEGED_MEMBER_SLUGS = frozenset({"admin", "cashier", "staff", "loan_officer", "committee"})
 
 
 def _member_has_active_django_user(member) -> bool:
@@ -672,12 +742,12 @@ def member_or_login_required(view_func):
 
 
 def staff_or_above_required(view_func):
-    """Decorator: allows staff, cashier, admin, and superuser roles."""
+    """Decorator: allows staff, cashier, admin, committee, and superuser roles."""
     @wraps(view_func)
     def _wrapped(request, *args, **kwargs):
         if request.user.is_authenticated:
             role = get_user_role(request.user)
-            if role in ("staff", "cashier", "admin", "superuser"):
+            if role in ("staff", "cashier", "admin", "committee", "superuser"):
                 return view_func(request, *args, **kwargs)
         messages.warning(request, "You do not have permission to access this page.")
         return redirect("root_login")

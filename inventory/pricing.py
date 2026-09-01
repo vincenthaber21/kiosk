@@ -5,6 +5,8 @@ from decimal import Decimal
 from django.db.models import Q
 from django.utils import timezone
 
+from .units import qty_json
+
 
 
 def _money(value):
@@ -49,8 +51,9 @@ def current_shelf_unit_price(product):
 def fifo_line_gross(product, quantity):
     """
     FIFO line total for a sale quantity: old tier units first, then new tier, then list price.
+    Quantity is in the product's stock unit (pieces or kilograms).
     """
-    qty = int(quantity or 0)
+    qty = Decimal(str(quantity or 0))
     if qty <= 0:
         return Decimal('0.00')
 
@@ -59,12 +62,12 @@ def fifo_line_gross(product, quantity):
     old_batch, new_batch = _stock_batches_for_product(product)
 
     if old_batch and old_batch.quantity > 0 and remaining > 0:
-        take = min(remaining, old_batch.quantity)
+        take = min(remaining, Decimal(str(old_batch.quantity)))
         total += old_batch.unit_price * take
         remaining -= take
 
     if remaining > 0 and new_batch and new_batch.quantity > 0:
-        take = min(remaining, new_batch.quantity)
+        take = min(remaining, Decimal(str(new_batch.quantity)))
         total += new_batch.unit_price * take
         remaining -= take
 
@@ -78,11 +81,11 @@ def fifo_weighted_unit_price(product, quantity):
     """
     FIFO average unit price for a sale quantity spanning old then new stock tiers.
     """
-    qty = int(quantity or 0)
+    qty = Decimal(str(quantity or 0))
     if qty <= 0:
         return current_shelf_unit_price(product)
 
-    return _money(fifo_line_gross(product, qty) / Decimal(qty))
+    return _money(fifo_line_gross(product, qty) / qty)
 
 
 def deduct_stock_batches(product, quantity):
@@ -92,16 +95,16 @@ def deduct_stock_batches(product, quantity):
     """
     from .models import ProductStockBatch
 
-    remaining = int(quantity or 0)
+    remaining = Decimal(str(quantity or 0))
     if remaining <= 0:
-        return 0
+        return Decimal('0')
 
-    deducted = 0
+    deducted = Decimal('0')
     old_batch, new_batch = _stock_batches_for_product(product)
 
     if old_batch and old_batch.quantity > 0 and remaining > 0:
-        take = min(remaining, old_batch.quantity)
-        old_batch.quantity -= take
+        take = min(remaining, Decimal(str(old_batch.quantity)))
+        old_batch.quantity = Decimal(str(old_batch.quantity)) - take
         remaining -= take
         deducted += take
         if old_batch.quantity <= 0:
@@ -110,8 +113,8 @@ def deduct_stock_batches(product, quantity):
             old_batch.save(update_fields=['quantity', 'updated_at'])
 
     if new_batch and new_batch.quantity > 0 and remaining > 0:
-        take = min(remaining, new_batch.quantity)
-        new_batch.quantity -= take
+        take = min(remaining, Decimal(str(new_batch.quantity)))
+        new_batch.quantity = Decimal(str(new_batch.quantity)) - take
         remaining -= take
         deducted += take
         if new_batch.quantity <= 0:
@@ -323,10 +326,10 @@ def price_payload_for_product(product, discount_list=None, member=None, segment_
     }
     old_batch, new_batch = _stock_batches_for_product(product)
     if old_batch and old_batch.quantity > 0:
-        out['old_stock_qty'] = old_batch.quantity
+        out['old_stock_qty'] = qty_json(old_batch.quantity)
         out['old_stock_price'] = str(old_batch.unit_price)
     if new_batch and new_batch.quantity > 0:
-        out['new_stock_qty'] = new_batch.quantity
+        out['new_stock_qty'] = qty_json(new_batch.quantity)
         out['new_stock_price'] = str(new_batch.unit_price)
     if old_batch and old_batch.quantity > 0:
         out['stock_tier'] = 'old'

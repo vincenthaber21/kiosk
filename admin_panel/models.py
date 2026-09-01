@@ -75,7 +75,7 @@ class StoreProfile(models.Model):
     """
     store_name = models.CharField(
         max_length=120,
-        default='Genglo Printing Services',
+        default='BAGNOS MPC',
         help_text="Official store / business name.",
     )
     show_store_name = models.BooleanField(
@@ -205,7 +205,7 @@ class StoreProfile(models.Model):
     def get(cls):
         obj, _ = cls.objects.get_or_create(
             pk=1,
-            defaults={'store_name': 'Genglo Printing Services'},
+            defaults={'store_name': 'BAGNOS MPC'},
         )
         return obj
 
@@ -218,7 +218,7 @@ class KioskConfig(models.Model):
     """
     system_name = models.CharField(
         max_length=200,
-        default='Genglo Printing Services - Self Checkout',
+        default='BAGNOS MPC - Self Checkout',
         help_text="System name shown in the kiosk header, page title, and receipts.",
     )
     tagline = models.CharField(
@@ -227,7 +227,7 @@ class KioskConfig(models.Model):
         help_text="Short tagline shown below the system name in the kiosk header.",
     )
     admin_dashboard_description = models.TextField(
-        default='Monitor real-time performance of Genglo Printing Services. Track sales, members, inventory and member standing from a single super admin console.',
+        default='Monitor real-time performance of BAGNOS MPC. Track sales, members, inventory and member standing from a single super admin console.',
         help_text="Description text shown in the Super Admin dashboard hero section.",
     )
     receipt_subtitle = models.CharField(
@@ -321,9 +321,9 @@ class KioskConfig(models.Model):
         obj, _ = cls.objects.get_or_create(
             pk=1,
             defaults={
-                'system_name': 'Genglo Printing Services - Self Checkout',
+                'system_name': 'BAGNOS MPC - Self Checkout',
                 'tagline': 'Quick, Easy, and Convenient Shopping',
-                'admin_dashboard_description': 'Monitor real-time performance of Genglo Printing Services. Track sales, members, inventory and member standing from a single super admin console.',
+                'admin_dashboard_description': 'Monitor real-time performance of BAGNOS MPC. Track sales, members, inventory and member standing from a single super admin console.',
                 'receipt_subtitle': 'Self-Checkout Receipt',
                 'receipt_thank_you': 'Thank you for your purchase!',
                 'receipt_header_store_name': 'SHOP NAME',
@@ -334,6 +334,75 @@ class KioskConfig(models.Model):
                 'receipt_footer_merchant_note': 'Merchant copy — retain for records.',
                 'member_max_credit': 0,
                 'tax_enabled': True,
+            },
+        )
+        return obj
+
+
+class CreditSettings(models.Model):
+    """
+    Singleton settings for store credit (utang) interest.
+    After the grace period, each unpaid month adds principal × rate.
+
+    Example (rate 0.015, principal ₱500):
+      Month 1: (500 × 0.015) + 500 = 507.50
+      Month 2: 507.50 + 7.50 = 515.00
+    """
+
+    interest_rate = models.DecimalField(
+        max_digits=6,
+        decimal_places=3,
+        default=0,
+        help_text=(
+            "Monthly interest rate on unpaid credit (utang) after grace. "
+            "Enter a decimal (0.015 = 1.5%) or a percent greater than 1 (1.5 = 1.5%). "
+            "Each unpaid month: interest = remaining principal × rate "
+            "(same ₱ amount each month). "
+            "Example: ₱500 → ₱507.50 after month 1; month 2 adds another ₱7.50 → ₱515. "
+            "Set to 0 to disable."
+        ),
+    )
+    grace_period_days = models.PositiveIntegerField(
+        default=3,
+        help_text=(
+            "Days after a credit sale before interest starts. "
+            "Example: 3 means the member can pay within 3 days with no interest; "
+            "after that, principal × rate is added every unpaid month. "
+            "Set to 0 to start charging from the day of the sale."
+        ),
+    )
+    is_enabled = models.BooleanField(
+        default=False,
+        help_text="When enabled, interest is applied to overdue credit (utang) balances.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Credit Settings"
+        verbose_name_plural = "Credit Settings"
+
+    def __str__(self):
+        if not self.is_enabled:
+            return "Credit settings — interest disabled"
+        rate = self.interest_rate or 0
+        days = int(self.grace_period_days or 0)
+        return f"Credit settings — {rate}/month after {days} day grace"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        pass  # Prevent deletion
+
+    @classmethod
+    def get(cls):
+        obj, _ = cls.objects.get_or_create(
+            pk=1,
+            defaults={
+                "interest_rate": 0,
+                "grace_period_days": 3,
+                "is_enabled": False,
             },
         )
         return obj
@@ -468,3 +537,65 @@ class PrinterSettings(models.Model):
             },
         )
         return obj
+
+
+class WebsiteAuditLog(models.Model):
+    """Immutable site-wide audit trail for admin monitoring.
+
+    Records who did what on the website (login, logout, and mutating actions
+    on dashboard / kiosk / admin). Rows are append-only.
+    """
+
+    class Action(models.TextChoices):
+        LOGIN = "LOGIN", "Login"
+        LOGOUT = "LOGOUT", "Logout"
+        LOGIN_FAILED = "LOGIN_FAILED", "Login Failed"
+        PAGE_ACTION = "PAGE_ACTION", "Page Action"
+        MEMBER = "MEMBER", "Members"
+        INVENTORY = "INVENTORY", "Inventory"
+        TRANSACTION = "TRANSACTION", "Transactions"
+        PURCHASE = "PURCHASE", "Purchase / Sale"
+        REFUND = "REFUND", "Refund"
+        BALANCE_REFILL = "BALANCE_REFILL", "Balance Refill"
+        FUND_TRANSFER = "FUND_TRANSFER", "Fund Transfer"
+        QR = "QR", "QR Code"
+        CREDIT_PAYMENT = "CREDIT_PAYMENT", "Credit Payment"
+        LOAN = "LOAN", "Loans"
+        SAVINGS = "SAVINGS", "Savings"
+        SHARE_CAPITAL = "SHARE_CAPITAL", "Share Capital"
+        PALAY = "PALAY", "Palay Trade"
+        SETTINGS = "SETTINGS", "Settings"
+        REPORT = "REPORT", "Report / Export"
+        KIOSK = "KIOSK", "Kiosk"
+        ADMIN = "ADMIN", "Django Admin"
+        OTHER = "OTHER", "Other"
+
+    action = models.CharField(max_length=40, choices=Action.choices, db_index=True)
+    actor = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="website_audit_entries",
+    )
+    actor_label = models.CharField(max_length=200)
+    description = models.TextField()
+    request_method = models.CharField(max_length=10, blank=True, default="")
+    request_path = models.CharField(max_length=500, blank=True, default="")
+    object_type = models.CharField(max_length=80, blank=True, default="")
+    object_id = models.CharField(max_length=64, blank=True, default="")
+    metadata = models.JSONField(default=dict, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Website Audit Log"
+        verbose_name_plural = "Website Audit Logs"
+        indexes = [
+            models.Index(fields=["action", "-created_at"]),
+            models.Index(fields=["actor", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.get_action_display()} by {self.actor_label} at {self.created_at}"

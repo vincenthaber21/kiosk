@@ -95,13 +95,13 @@ def validate_cart_items(items: list[dict]) -> tuple[bool, str, list[dict]]:
     """
     Validate raw cart item dicts from the request body.
 
-    Each item must have ``product_id`` and ``quantity`` (positive int ≤ MAX_QUANTITY).
+    Each item must have ``product_id`` and ``quantity`` (positive number ≤ MAX_QUANTITY).
     Optional: ``sale_unit_id``, ``units_per_package``, ``barcode``.
 
     Returns
     -------
     (is_valid, error_message, cleaned_items)
-        *cleaned_items* has ``quantity`` coerced to ``int``.
+        *cleaned_items* has ``quantity`` coerced to ``Decimal``.
     """
     if not items:
         return False, "No items in cart", []
@@ -111,8 +111,8 @@ def validate_cart_items(items: list[dict]) -> tuple[bool, str, list[dict]]:
         if "product_id" not in item or "quantity" not in item:
             return False, "Invalid item data: missing product_id or quantity", []
         try:
-            qty = int(item["quantity"])
-        except (ValueError, TypeError):
+            qty = Decimal(str(item["quantity"]))
+        except (ValueError, TypeError, Exception):
             return False, "Invalid quantity value", []
         if qty <= 0:
             return False, "Quantity must be a positive number", []
@@ -294,8 +294,13 @@ def get_member_credit_outstanding(member: "Member") -> Decimal:
     return to_decimal(member_credit_outstanding_amount(member))
 
 
+CREDIT_LIMIT_FEATURE_ENABLED = False
+
+
 def get_member_max_credit_limit() -> Decimal:
     """Store-wide cap on outstanding credit per member (0 = unlimited)."""
+    if not CREDIT_LIMIT_FEATURE_ENABLED:
+        return Decimal("0.00")
     from admin_panel.models import KioskConfig
 
     return to_decimal(KioskConfig.get().member_max_credit)
@@ -419,7 +424,7 @@ def format_receipt_text(transaction: "Transaction", change_amount: Decimal = Dec
         lines.append(f"  {item.product_name}")
         lines.append(
             line_lr(
-                f"    {item.quantity} x ₱{item.unit_price}",
+                f"    {item.quantity_display} x ₱{item.unit_price}",
                 f"₱{item.total_price}",
             )
         )

@@ -1,70 +1,105 @@
 """
 Utility functions for inventory management
 """
-from django.core.mail import send_mail
+import logging
+import re
+
 from django.conf import settings
-from django.utils.html import format_html
 from django.core.cache import cache
-import threading
-from admin_panel.utils import get_masked_from_email
+from django.utils.html import format_html, escape as html_escape
+
+logger = logging.getLogger(__name__)
+
+STOCK_ALERT_ROLE_SLUGS = ('admin', 'staff')
+_STOCK_ALERT_SEND_DEDUP_SECONDS = 20
 
 
 def _send_email_async(subject, message, recipient_list, html_message=None):
     """
-    Send email in a background thread to avoid blocking the main request.
-    
-    Args:
-        subject: Email subject
-        message: Plain text message
-        recipient_list: List of recipient email addresses
-        html_message: Optional HTML message
+    Send email in a background thread with retries (same path as OTP mail).
     """
-    def send():
-        try:
-            send_mail(
-                subject=subject,
-                message=message,
-                from_email=get_masked_from_email(),
-                recipient_list=recipient_list,
-                html_message=html_message,
-                fail_silently=False,
-            )
-        except Exception as e:
-            # Log error but don't fail
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f'Failed to send email: {str(e)}')
-    
-    # Start email sending in background thread
-    thread = threading.Thread(target=send, daemon=True)
-    thread.start()
+    recipients = [email for email in (recipient_list or []) if email]
+    if not recipients:
+        logger.warning('Skipped email "%s": no staff/admin recipients', subject)
+        return
+
+    from mobile_api.email_utils import send_email_async
+
+    send_email_async(
+        subject=subject,
+        body=message,
+        recipient_email=recipients,
+        html_body=html_message,
+    )
+
+
+def _normalize_email(value):
+    """Return a bare email address from a raw field or 'Name <email>' string."""
+    if not value:
+        return ''
+    value = str(value).strip()
+    if not value:
+        return ''
+    match = re.search(r'<([^<>\s]+@[^<>\s]+)>', value)
+    if match:
+        return match.group(1).strip()
+    return value
+
+
+def get_stock_alert_recipient_emails():
+    """
+    All distinct emails for active Members with admin or staff roles.
+
+    Uses Member.email first, then the linked Django User email.
+    Falls back to ADMIN_EMAIL / DEFAULT_FROM_EMAIL if none are set.
+    """
+    from members.models import Member
+
+    emails = []
+    seen = set()
+
+    def _add(raw):
+        email = _normalize_email(raw)
+        key = email.lower()
+        if email and '@' in email and key not in seen:
+            seen.add(key)
+            emails.append(email)
+
+    members = (
+        Member.objects.filter(
+            is_active=True,
+            member_role__slug__in=STOCK_ALERT_ROLE_SLUGS,
+        )
+        .select_related('user', 'member_role')
+        .order_by('member_role__sort_order', 'first_name', 'last_name')
+    )
+    for member in members:
+        _add(member.email)
+        user = getattr(member, 'user', None)
+        if user:
+            _add(user.email)
+
+    if not emails:
+        _add(getattr(settings, 'ADMIN_EMAIL', ''))
+    if not emails:
+        _add(getattr(settings, 'DEFAULT_FROM_EMAIL', ''))
+
+    return emails
 
 
 def get_admin_email():
-    """
-    Get admin email from database - checks superusers, staff users, and Member admins.
-    Same logic as used in send_daily_report command.
-    """
-    from django.contrib.auth.models import User
-    from members.models import Member
-    
-    # First, try to get superuser email
-    superuser = User.objects.filter(is_superuser=True, is_active=True).exclude(email='').first()
-    if superuser and superuser.email:
-        return superuser.email
-    
-    # Then try to get staff user email
-    staff_user = User.objects.filter(is_staff=True, is_active=True).exclude(email='').first()
-    if staff_user and staff_user.email:
-        return staff_user.email
-    
-    # Finally, try to get Member with admin role
-    admin_member = Member.objects.filter(member_role__slug='admin', is_active=True).exclude(email__isnull=True).exclude(email='').first()
-    if admin_member and admin_member.email:
-        return admin_member.email
-    
-    # Fall back to settings
-    return getattr(settings, 'ADMIN_EMAIL', getattr(settings, 'DEFAULT_FROM_EMAIL', 'habervincent21@gmail.com'))
+    """First stock-alert recipient (admin/staff). Kept for callers that need a single address."""
+    recipients = get_stock_alert_recipient_emails()
+    return recipients[0] if recipients else ''
+
+
+def _claim_stock_alert_send(product_id, event):
+    """Prevent signal + StockManager from sending the same alert twice in one request."""
+    key = f'inv_stock_email_{event}_{product_id}'
+    if cache.get(key):
+        return False
+    cache.set(key, 1, _STOCK_ALERT_SEND_DEDUP_SECONDS)
+    return True
 
 
 def send_out_of_stock_notification(product):
@@ -75,8 +110,16 @@ def send_out_of_stock_notification(product):
         product: Product instance that has run out of stock
     """
     try:
-        # Get admin email from database (checks superuser, staff, and Member admin)
-        admin_email = get_admin_email()
+        if not _claim_stock_alert_send(product.id, 'out_of_stock'):
+            return True
+
+        recipients = get_stock_alert_recipient_emails()
+        if not recipients:
+            logger.warning(
+                'No staff/admin emails for out-of-stock alert (product %s)',
+                product.id,
+            )
+            return False
         
         # Prepare email content
         subject = f'⚠️ Product Out of Stock: {product.name}'
@@ -87,7 +130,7 @@ def send_out_of_stock_notification(product):
         
         # Build email body
         body = f"""
-Dear Admin,
+Dear Admin and Staff,
 
 A product has run out of stock and requires immediate attention.
 
@@ -104,7 +147,7 @@ Please restock this product as soon as possible to avoid sales disruption.
 This is an automated notification from the inventory management system.
 
 Best regards,
-Inventory Management System
+BAGNOS MPC
 """
         
         # HTML version for better formatting
@@ -129,7 +172,7 @@ Inventory Management System
                     <h2>⚠️ Product Out of Stock Alert</h2>
                 </div>
                 <div class="content">
-                    <p>Dear Admin,</p>
+                    <p>Dear Admin and Staff,</p>
                     <p class="warning">A product has run out of stock and requires immediate attention.</p>
                     
                     <div class="product-info">
@@ -146,7 +189,7 @@ Inventory Management System
                     <p>This is an automated notification from the inventory management system.</p>
                 </div>
                 <div class="footer">
-                    <p>Best regards,<br>Inventory Management System</p>
+                    <p>Best regards,<br>BAGNOS MPC</p>
                 </div>
             </div>
         </body>
@@ -160,14 +203,10 @@ Inventory Management System
         price_str
         )
         
-        # Send email asynchronously (in background thread)
-        _send_email_async(subject, body, [admin_email], html_message)
+        _send_email_async(subject, body, recipients, html_message)
         
         return True
     except Exception as e:
-        # Log error but don't fail the stock update
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f'Failed to send out-of-stock notification for product {product.id}: {str(e)}')
         return False
 
@@ -180,8 +219,16 @@ def send_low_stock_warning(product):
         product: Product instance that has reached low stock threshold
     """
     try:
-        # Get admin email from database
-        admin_email = get_admin_email()
+        if not _claim_stock_alert_send(product.id, 'low_stock'):
+            return True
+
+        recipients = get_stock_alert_recipient_emails()
+        if not recipients:
+            logger.warning(
+                'No staff/admin emails for low-stock alert (product %s)',
+                product.id,
+            )
+            return False
         
         # Prepare email content
         subject = f'⚠️ Low Stock Warning: {product.name}'
@@ -195,7 +242,7 @@ def send_low_stock_warning(product):
         
         # Build email body
         body = f"""
-Dear Admin,
+Dear Admin and Staff,
 
 A product has reached its low stock threshold and requires attention.
 
@@ -213,7 +260,7 @@ Please consider restocking this product soon to avoid running out of stock.
 This is an automated notification from the inventory management system.
 
 Best regards,
-Inventory Management System
+BAGNOS MPC
 """
         
         # HTML version for better formatting
@@ -239,7 +286,7 @@ Inventory Management System
                     <h2>⚠️ Low Stock Warning</h2>
                 </div>
                 <div class="content">
-                    <p>Dear Admin,</p>
+                    <p>Dear Admin and Staff,</p>
                     <div class="alert-box">
                         <p><strong>A product has reached its low stock threshold and requires attention.</strong></p>
                     </div>
@@ -259,7 +306,7 @@ Inventory Management System
                     <p>This is an automated notification from the inventory management system.</p>
                 </div>
                 <div class="footer">
-                    <p>Best regards,<br>Inventory Management System</p>
+                    <p>Best regards,<br>BAGNOS MPC</p>
                 </div>
             </div>
         </body>
@@ -274,16 +321,176 @@ Inventory Management System
         price_str
         )
         
-        # Send email asynchronously (in background thread)
-        _send_email_async(subject, body, [admin_email], html_message)
+        _send_email_async(subject, body, recipients, html_message)
         
         return True
     except Exception as e:
-        # Log error but don't fail
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f'Failed to send low stock warning for product {product.id}: {str(e)}')
         return False
+
+
+def _stock_alert_product_lines(products):
+    """Plain-text and HTML rows for digest emails."""
+    text_lines = []
+    html_rows = []
+    for product in products:
+        category_name = product.category.name if product.category else 'Uncategorized'
+        barcode = product.barcode or '—'
+        text_lines.append(
+            f"- {product.name} (barcode: {barcode}) | stock: {product.stock_quantity} | "
+            f"threshold: {product.low_stock_threshold} | category: {category_name}"
+        )
+        html_rows.append(
+            '<tr>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;">{html_escape(product.name)}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;">{html_escape(str(barcode))}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;text-align:center;">{product.stock_quantity}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;text-align:center;">{product.low_stock_threshold}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;">{html_escape(category_name)}</td>'
+            '</tr>'
+        )
+    return '\n'.join(text_lines), ''.join(html_rows)
+
+
+def send_inventory_stock_alerts():
+    """
+    Email current low-stock and out-of-stock products to all staff and admin members.
+    Used by the inventory products section "Email Stock Alerts" action.
+    """
+    from django.db.models import F
+    from inventory.models import Product
+
+    recipients = get_stock_alert_recipient_emails()
+    if not recipients:
+        return {
+            'success': False,
+            'error': 'No email addresses found for active staff or admin members.',
+            'recipient_count': 0,
+            'low_stock_count': 0,
+            'out_of_stock_count': 0,
+        }
+
+    low_stock = list(
+        Product.objects.filter(
+            is_active=True,
+            stock_quantity__gt=0,
+            stock_quantity__lte=F('low_stock_threshold'),
+        ).select_related('category').order_by('name')
+    )
+    out_of_stock = list(
+        Product.objects.filter(
+            is_active=True,
+            stock_quantity=0,
+        ).select_related('category').order_by('name')
+    )
+
+    if not low_stock and not out_of_stock:
+        return {
+            'success': False,
+            'error': 'There are no low-stock or out-of-stock products to report.',
+            'recipient_count': len(recipients),
+            'low_stock_count': 0,
+            'out_of_stock_count': 0,
+        }
+
+    low_text, low_html = _stock_alert_product_lines(low_stock)
+    oos_text, oos_html = _stock_alert_product_lines(out_of_stock)
+
+    subject = (
+        f'⚠️ Inventory Stock Alerts: {len(low_stock)} low stock, '
+        f'{len(out_of_stock)} out of stock'
+    )
+    body = f"""
+Dear Admin and Staff,
+
+Current inventory alerts that need restocking:
+
+OUT OF STOCK ({len(out_of_stock)})
+{oos_text or '- None'}
+
+LOW STOCK ({len(low_stock)})
+{low_text or '- None'}
+
+Please restock these products as soon as possible.
+
+This is an automated notification from the inventory management system.
+
+Best regards,
+BAGNOS MPC
+"""
+
+    table_head = (
+        '<tr>'
+        '<th style="padding:8px;text-align:left;border-bottom:2px solid #ddd;">Name</th>'
+        '<th style="padding:8px;text-align:left;border-bottom:2px solid #ddd;">Barcode</th>'
+        '<th style="padding:8px;text-align:center;border-bottom:2px solid #ddd;">Stock</th>'
+        '<th style="padding:8px;text-align:center;border-bottom:2px solid #ddd;">Threshold</th>'
+        '<th style="padding:8px;text-align:left;border-bottom:2px solid #ddd;">Category</th>'
+        '</tr>'
+    )
+    oos_section = (
+        f'<h3 style="color:#d32f2f;">Out of Stock ({len(out_of_stock)})</h3>'
+        f'<table style="width:100%;border-collapse:collapse;background:#fff;">{table_head}{oos_html}</table>'
+        if out_of_stock else
+        '<h3 style="color:#d32f2f;">Out of Stock (0)</h3><p>None.</p>'
+    )
+    low_section = (
+        f'<h3 style="color:#ff9800;">Low Stock ({len(low_stock)})</h3>'
+        f'<table style="width:100%;border-collapse:collapse;background:#fff;">{table_head}{low_html}</table>'
+        if low_stock else
+        '<h3 style="color:#ff9800;">Low Stock (0)</h3><p>None.</p>'
+    )
+    html_message = f"""
+    <html>
+    <body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;">
+      <div style="max-width:720px;margin:0 auto;padding:20px;">
+        <div style="background:#d32f2f;color:#fff;padding:20px;border-radius:5px 5px 0 0;text-align:center;">
+          <h2 style="margin:0;">Inventory Stock Alerts</h2>
+        </div>
+        <div style="background:#f9f9f9;padding:20px;border:1px solid #ddd;">
+          <p>Dear Admin and Staff,</p>
+          <p>Current inventory alerts that need restocking:</p>
+          {oos_section}
+          {low_section}
+          <p>Please restock these products as soon as possible.</p>
+        </div>
+        <p style="text-align:center;color:#777;font-size:12px;">Best regards,<br>BAGNOS MPC</p>
+      </div>
+    </body>
+    </html>
+    """
+
+    try:
+        _send_email_async(subject, body, recipients, html_message)
+    except Exception as exc:
+        logger.error('Failed to send inventory stock alerts: %s', exc)
+        return {
+            'success': False,
+            'error': 'Could not send the stock alert email. Please try again.',
+            'recipient_count': len(recipients),
+            'low_stock_count': len(low_stock),
+            'out_of_stock_count': len(out_of_stock),
+        }
+
+    logger.info(
+        'Queued inventory stock alerts to %s staff/admin recipient(s) '
+        '(%s low stock, %s out of stock)',
+        len(recipients),
+        len(low_stock),
+        len(out_of_stock),
+    )
+    return {
+        'success': True,
+        'message': (
+            f'Stock alerts sent to {len(recipients)} staff/admin recipient'
+            f'{"s" if len(recipients) != 1 else ""}. '
+            f'{len(out_of_stock)} out of stock, {len(low_stock)} low stock.'
+        ),
+        'recipient_count': len(recipients),
+        'low_stock_count': len(low_stock),
+        'out_of_stock_count': len(out_of_stock),
+        'recipients': recipients,
+    }
 
 
 def reset_out_of_stock_attempts(product):
@@ -354,8 +561,13 @@ def send_failed_access_notification(product, attempt_count):
         attempt_count: Number of failed attempts
     """
     try:
-        # Get admin email from database
-        admin_email = get_admin_email()
+        recipients = get_stock_alert_recipient_emails()
+        if not recipients:
+            logger.warning(
+                'No staff/admin emails for failed-access alert (product %s)',
+                product.id,
+            )
+            return False
         
         # Prepare email content
         subject = f'⚠️ High Demand Alert: {product.name} (Out of Stock)'
@@ -366,7 +578,7 @@ def send_failed_access_notification(product, attempt_count):
         
         # Build email body
         body = f"""
-Dear Admin,
+Dear Admin and Staff,
 
 Multiple customers have attempted to access a product that is currently out of stock.
 
@@ -387,7 +599,7 @@ This indicates high customer demand for this product. Please restock immediately
 This is an automated notification from the inventory management system.
 
 Best regards,
-Inventory Management System
+BAGNOS MPC
 """
         
         # HTML version for better formatting
@@ -414,7 +626,7 @@ Inventory Management System
                     <h2>⚠️ High Demand Alert</h2>
                 </div>
                 <div class="content">
-                    <p>Dear Admin,</p>
+                    <p>Dear Admin and Staff,</p>
                     <div class="alert-box">
                         <p><strong>Multiple customers have attempted to access a product that is currently out of stock.</strong></p>
                         <p class="attempt-count">Failed Attempts: {}</p>
@@ -434,7 +646,7 @@ Inventory Management System
                     <p>This is an automated notification from the inventory management system.</p>
                 </div>
                 <div class="footer">
-                    <p>Best regards,<br>Inventory Management System</p>
+                    <p>Best regards,<br>BAGNOS MPC</p>
                 </div>
             </div>
         </body>
@@ -449,14 +661,10 @@ Inventory Management System
         price_str
         )
         
-        # Send email asynchronously (in background thread)
-        _send_email_async(subject, body, [admin_email], html_message)
+        _send_email_async(subject, body, recipients, html_message)
         
         return True
     except Exception as e:
-        # Log error but don't fail
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f'Failed to send failed access notification for product {product.id}: {str(e)}')
         return False
 
@@ -546,13 +754,15 @@ def _giveaway_stock_filter(related_prefix=''):
 
 def annotate_giveaway_units_given(queryset):
     """Add giveaway_units_given: total units distributed via Record Giveaway."""
-    from django.db.models import Sum, Value
+    from django.db.models import DecimalField, Sum, Value
     from django.db.models.functions import Coalesce
 
+    qty_field = DecimalField(max_digits=14, decimal_places=3)
     return queryset.annotate(
         giveaway_units_given=Coalesce(
             Sum('stock_transactions__quantity', filter=_giveaway_stock_filter()),
-            Value(0),
+            Value(0, output_field=qty_field),
+            output_field=qty_field,
         ),
     )
 
@@ -561,6 +771,7 @@ def giveaway_totals_by_product_ids(product_ids):
     """Total units distributed via Record Giveaway, keyed by product id."""
     if not product_ids:
         return {}
+    from decimal import Decimal
     from django.db.models import Sum
     from .models import StockTransaction
 
@@ -573,7 +784,7 @@ def giveaway_totals_by_product_ids(product_ids):
         .values('product_id')
         .annotate(total=Sum('quantity'))
     )
-    return {row['product_id']: int(row['total'] or 0) for row in rows}
+    return {row['product_id']: Decimal(str(row['total'] or 0)) for row in rows}
 
 
 def get_giveaway_summary_for_period(date_from, date_to=None):

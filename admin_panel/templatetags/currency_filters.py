@@ -1,6 +1,6 @@
 from django import template
 from django.contrib.messages import get_messages
-from members.utils import mask_rfid
+from members.utils import mask_rfid as mask_rfid_value
 
 register = template.Library()
 
@@ -26,6 +26,7 @@ def deduped_messages(context):
         unique.append(m)
     return unique
 
+
 @register.filter(name='currency')
 def currency(value):
     """
@@ -40,12 +41,19 @@ def currency(value):
     except (ValueError, TypeError):
         return value
 
+
+@register.filter(name='stock_qty')
+def stock_qty(value, unit_type='piece'):
+    """Format on-hand quantity as pieces or kilograms."""
+    from inventory.units import format_qty_display
+    return format_qty_display(value, unit_type or 'piece', with_unit=True)
+
+
 @register.filter(name='mask_rfid')
-def mask_rfid_filter(value):
+def mask_rfid(value):
     """
     Mask RFID card number for security purposes.
-    Shows only first 3 digits followed by asterisks.
-    Example: '0008265033' -> '000****'
+    Shows only the last 4 digits, prefixed with asterisks.
+    Example: '0008265033' -> '******5033'
     """
-    return mask_rfid(value)
-
+    return mask_rfid_value(value)

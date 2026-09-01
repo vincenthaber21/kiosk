@@ -570,7 +570,7 @@ def get_email_config() -> Dict[str, Any]:
         'EMAIL_USE_TLS': os.environ.get('MAIL_USE_TLS', 'True').lower() == 'true',
         'EMAIL_HOST_USER': os.environ.get('MAIL_USERNAME'),
         'EMAIL_HOST_PASSWORD': os.environ.get('MAIL_PASSWORD'),
-        'DEFAULT_FROM_EMAIL': os.environ.get('MAIL_DEFAULT_SENDER', 'COOP Cooperative Store <noreply@coopkiosk.com>'),
+        'DEFAULT_FROM_EMAIL': os.environ.get('MAIL_DEFAULT_SENDER', 'BAGNOS MPC <noreply@coopkiosk.com>'),
         'ADMIN_EMAIL': os.environ.get('ADMIN_EMAIL'),
         'DAILY_REPORT_EMAIL': os.environ.get('DAILY_REPORT_EMAIL'),
     }
@@ -692,7 +692,7 @@ MAIL_PORT=587
 MAIL_USE_TLS=True
 MAIL_USERNAME=your-email@gmail.com
 MAIL_PASSWORD=your-app-password
-MAIL_DEFAULT_SENDER=COOP Cooperative Store <noreply@coopkiosk.com>
+MAIL_DEFAULT_SENDER=BAGNOS MPC <noreply@coopkiosk.com>
 ADMIN_EMAIL=admin@coopkiosk.com
 
 # CORS Settings

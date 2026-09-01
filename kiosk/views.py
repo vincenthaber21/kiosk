@@ -26,6 +26,7 @@ from inventory.pricing import (
     price_payload_for_product,
     deduct_stock_batches,
 )
+from inventory.units import is_kilo_product, parse_sale_qty, qty_json
 from members.models import Member, BalanceTransaction, SegmentProductGroupDiscount
 from members.utils import mask_rfid, member_registered_discount_for_kiosk
 from transactions.models import Transaction, TransactionItem, WalkInCustomer, user_processor_display
@@ -48,6 +49,7 @@ from kiosk_helper import (
     get_member_credit_outstanding,
     member_credit_fields,
     member_credit_limit_exceeded,
+    get_member_max_credit_limit,
     calculate_change,
     set_kiosk_session,
     clear_kiosk_session,
@@ -284,6 +286,7 @@ def _kiosk_shell_context(request):
         'kiosk_skip_idle_logout': kiosk_skip_idle_logout,
         'can_apply_manual_discount': can_apply_manual_discount,
         'can_search_kiosk_members': can_search_kiosk_members,
+        'member_max_credit': get_member_max_credit_limit(),
     }
 
 
@@ -485,7 +488,9 @@ def get_all_products(request):
                 'price': pf['price'],
                 'regular_price': pf['regular_price'],
                 'discount_group': p.discount_group_code,
-                'stock': p.stock_quantity,
+                'stock': qty_json(p.stock_quantity),
+                'unit_type': p.unit_type,
+                'is_kilo': is_kilo_product(p),
                 'image': image_url,
                 'category_id': p.category_id,
                 'category_name': p.category.name if p.category else 'Uncategorized',
@@ -651,8 +656,8 @@ def api_quote_cart_lines(request):
     for row in items:
         try:
             pid = int(row.get('product_id'))
-            qty = int(row.get('quantity'))
-        except (TypeError, ValueError):
+            qty = Decimal(str(row.get('quantity')))
+        except (TypeError, ValueError, Exception):
             continue
         if qty <= 0:
             continue
@@ -683,6 +688,11 @@ def api_quote_cart_lines(request):
             continue
         qty = row['quantity']
         sale_unit = get_sale_unit_for_cart_item(product, row)
+        try:
+            qty = parse_sale_qty(qty, product)
+        except ValueError:
+            continue
+        row['quantity'] = qty
         pricing = kiosk_line_pricing(
             product,
             qty,
@@ -699,7 +709,7 @@ def api_quote_cart_lines(request):
             'product_id': product.id,
             'sale_unit_id': sale_unit.id if sale_unit else None,
             'cart_line_key': cart_line_key(product.id, sale_unit.id if sale_unit else None),
-            'quantity': qty,
+            'quantity': qty_json(qty),
             'unit_price': pricing['unit_price'],
             'regular_price': pricing['regular_price'],
             'line_gross': pricing['line_gross'],
@@ -725,8 +735,8 @@ def _parse_kiosk_cart_stock_rows(rows, product_map=None):
     for row in rows or []:
         try:
             pid = int(row.get('product_id'))
-            qty = int(row.get('quantity'))
-        except (TypeError, ValueError):
+            qty = Decimal(str(row.get('quantity')))
+        except (TypeError, ValueError, Exception):
             continue
         if qty <= 0:
             continue
@@ -770,12 +780,12 @@ def api_kiosk_update_cart_quantity(request):
 
     try:
         product_id = int(data.get('product_id'))
-        quantity = int(data.get('quantity'))
-    except (TypeError, ValueError):
+        quantity = Decimal(str(data.get('quantity')))
+    except (TypeError, ValueError, Exception):
         return JsonResponse({'success': False, 'error': 'Invalid product_id or quantity'}, status=400)
 
-    if quantity < 1:
-        return JsonResponse({'success': False, 'error': 'Quantity must be at least 1'}, status=400)
+    if quantity <= 0:
+        return JsonResponse({'success': False, 'error': 'Quantity must be greater than zero'}, status=400)
 
     product = (
         _kiosk_products_queryset(request)
@@ -786,6 +796,11 @@ def api_kiosk_update_cart_quantity(request):
     )
     if not product:
         return JsonResponse({'success': False, 'error': 'Product not found'}, status=404)
+
+    try:
+        quantity = parse_sale_qty(quantity, product)
+    except ValueError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
     sale_unit_row = {'sale_unit_id': data.get('sale_unit_id')}
     if data.get('units_per_package') not in (None, ''):
@@ -1192,6 +1207,13 @@ def process_payment(request):
                 transaction.status = 'cancelled'
                 transaction.save()
                 return JsonResponse({'success': False, 'error': 'Invalid sale unit for cart item'})
+            try:
+                qty = parse_sale_qty(qty, product)
+            except ValueError as exc:
+                transaction.status = 'cancelled'
+                transaction.save()
+                return JsonResponse({'success': False, 'error': str(exc)})
+            item_data['quantity'] = qty
 
             pricing = kiosk_line_pricing(
                 product,
@@ -1334,6 +1356,36 @@ def process_payment(request):
             (ti.manual_discount_php or Decimal('0.00')) for ti in line_items
         ).quantize(Decimal('0.01'))
 
+        try:
+            from admin_panel.audit import mark_audit_recorded, record_audit
+            customer = (
+                (member.full_name if member else None)
+                or transaction.guest_customer_name
+                or transaction.customer_display_name
+                or 'Walk-in'
+            )
+            record_audit(
+                'PURCHASE',
+                actor=request.user if getattr(request.user, 'is_authenticated', False) else None,
+                description=(
+                    f"Sale {transaction.transaction_number}: ₱{transaction.total_amount} "
+                    f"via {payment_method} for {customer}"
+                ),
+                request=request,
+                object_type='Transaction',
+                object_id=transaction.pk,
+                metadata={
+                    'transaction_number': transaction.transaction_number,
+                    'payment_method': payment_method,
+                    'total_amount': str(transaction.total_amount),
+                    'item_count': len(line_items),
+                    'customer': customer,
+                },
+            )
+            mark_audit_recorded(request)
+        except Exception:
+            pass
+
         return JsonResponse({
             'success': True,
             'transaction': {
@@ -1347,7 +1399,8 @@ def process_payment(request):
                 'items': [
                     {
                         'product_name': ti.product_name,
-                        'quantity': ti.quantity,
+                        'quantity': qty_json(ti.quantity),
+                        'quantity_display': ti.quantity_display,
                         'unit_price': str(ti.unit_price),
                         'total_price': str(ti.total_price),
                         'vat_amount': str(ti.vat_amount),

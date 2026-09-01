@@ -16,6 +16,12 @@ def _money(value):
     return Decimal(str(value)).quantize(Decimal('0.01'))
 
 
+def _qty(value):
+    if value is None or value == '':
+        return Decimal('0')
+    return Decimal(str(value))
+
+
 def capture_stock_snapshot(product):
     """
     Return a fresh snapshot of a product's stock and prices:
@@ -57,9 +63,9 @@ def capture_stock_snapshot(product):
         cost = _money(row['cost'])
 
     return {
-        'old': int(old_qty),
-        'new': int(new_qty),
-        'total': int(total),
+        'old': old_qty or 0,
+        'new': new_qty or 0,
+        'total': total or 0,
         'unit_price': unit_price,
         'cost': cost,
         'old_stock_price': old_price,
@@ -165,8 +171,8 @@ def _close_purchase_period(period, ended_at):
         return None
     period['period_end'] = ended_at
     buy = period['buying_price'] or Decimal('0.00')
-    qty = int(period['qty_purchased'] or 0)
-    period['buy_value'] = (buy * Decimal(qty)).quantize(Decimal('0.01'))
+    qty = _qty(period['qty_purchased'] or 0)
+    period['buy_value'] = (buy * qty).quantize(Decimal('0.01'))
     return period
 
 
@@ -232,13 +238,13 @@ def build_product_history_ledger_rows(product, history_entries=None):
             for batch in batches:
                 buy = _money(batch.cost) or Decimal('0.00')
                 sell = _money(batch.unit_price) or Decimal('0.00')
-                qty = int(batch.quantity or 0)
+                qty = _qty(batch.quantity or 0)
                 rows.append(_row(
                     event_type='PURCHASE',
                     description=f'Current {batch.get_tier_display()} on hand',
                     qty=qty,
                     buying_price=buy,
-                    buying_value=(buy * Decimal(qty)).quantize(Decimal('0.01')),
+                    buying_value=(buy * qty).quantize(Decimal('0.01')),
                     selling_price=sell,
                     stock_after=qty,
                     created_at=getattr(batch, 'updated_at', None) or getattr(batch, 'created_at', None),
@@ -248,13 +254,13 @@ def build_product_history_ledger_rows(product, history_entries=None):
 
         buy = _money(getattr(product, 'cost', None)) or Decimal('0.00')
         sell = _money(getattr(product, 'price', None)) or Decimal('0.00')
-        qty = int(getattr(product, 'stock_quantity', 0) or 0)
+        qty = _qty(getattr(product, 'stock_quantity', 0) or 0)
         return [_row(
             event_type='PURCHASE',
             description='Current stock on hand',
             qty=qty,
             buying_price=buy,
-            buying_value=(buy * Decimal(qty)).quantize(Decimal('0.01')),
+            buying_value=(buy * qty).quantize(Decimal('0.01')),
             selling_price=sell,
             stock_after=qty,
             note='No history yet — showing current stock',
@@ -273,8 +279,8 @@ def build_product_history_ledger_rows(product, history_entries=None):
         buy_before = _money(entry.cost_before)
         sell = _money(entry.unit_price)
         sell_before = _money(entry.unit_price_before)
-        delta = int(entry.total_after or 0) - int(entry.total_before or 0)
-        sold = int(entry.quantity_sold or 0)
+        delta = _qty(entry.total_after or 0) - _qty(entry.total_before or 0)
+        sold = _qty(entry.quantity_sold or 0)
         buy_changed = buy_before is not None and buy is not None and buy_before != buy
         sell_changed = sell_before is not None and sell is not None and sell_before != sell
 
@@ -451,12 +457,12 @@ def build_purchase_rows_by_buying_price(product, history_entries=None):
             for batch in batches:
                 buy = _money(batch.cost) or Decimal('0.00')
                 sell = _money(batch.unit_price) or Decimal('0.00')
-                qty = int(batch.quantity or 0)
+                qty = _qty(batch.quantity or 0)
                 rows.append(_base_row(
                     buying_price=buy,
                     selling_price=sell,
                     qty_purchased=qty,
-                    buy_value=(buy * Decimal(qty)).quantize(Decimal('0.01')),
+                    buy_value=(buy * qty).quantize(Decimal('0.01')),
                     period_start=getattr(batch, 'updated_at', None) or getattr(batch, 'created_at', None),
                     period_end=None,
                     is_current=True,
@@ -466,12 +472,12 @@ def build_purchase_rows_by_buying_price(product, history_entries=None):
 
         buy = _money(getattr(product, 'cost', None)) or Decimal('0.00')
         sell = _money(getattr(product, 'price', None)) or Decimal('0.00')
-        qty = int(getattr(product, 'stock_quantity', 0) or 0)
+        qty = _qty(getattr(product, 'stock_quantity', 0) or 0)
         return [_base_row(
             buying_price=buy,
             selling_price=sell,
             qty_purchased=qty,
-            buy_value=(buy * Decimal(qty)).quantize(Decimal('0.01')),
+            buy_value=(buy * qty).quantize(Decimal('0.01')),
             period_start=None,
             period_end=None,
             is_current=True,
@@ -520,9 +526,9 @@ def build_purchase_rows_by_buying_price(product, history_entries=None):
         elif sell_after is not None:
             current['selling_price'] = sell_after
 
-        delta = int(entry.total_after or 0) - int(entry.total_before or 0)
+        delta = _qty(entry.total_after or 0) - _qty(entry.total_before or 0)
         if delta > 0 and entry.change_type in purchase_types:
-            current['qty_purchased'] = int(current['qty_purchased'] or 0) + delta
+            current['qty_purchased'] = _qty(current['qty_purchased'] or 0) + delta
 
     if current is not None:
         current['is_current'] = True

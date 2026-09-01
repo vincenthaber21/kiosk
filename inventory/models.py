@@ -4,8 +4,11 @@ import json
 import barcode
 from barcode.writer import ImageWriter
 from django.core.files.base import ContentFile
+from django.core.validators import MinValueValidator
 from django.db import models
 from PIL import Image
+
+from .units import UNIT_CHOICES, UNIT_KILO, UNIT_PIECE, format_qty_display
 
 class Category(models.Model):
     name = models.CharField(max_length=100)
@@ -107,14 +110,21 @@ class Product(models.Model):
         max_digits=10,
         decimal_places=2,
         verbose_name='Selling price',
-        help_text='Retail / list selling price per piece (₱).',
+        help_text='Retail / list selling price per piece or per kg (₱).',
     )
     cost = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         default=0.00,
         verbose_name='Buying price',
-        help_text='Purchase / cost price per piece (₱). Used for margin tracking.',
+        help_text='Purchase / cost price per piece or per kg (₱). Used for margin tracking.',
+    )
+    unit_type = models.CharField(
+        max_length=10,
+        choices=UNIT_CHOICES,
+        default=UNIT_PIECE,
+        db_index=True,
+        help_text='By piece = counted units. By kilogram = weighable goods with decimal kg stock.',
     )
 
     tax_rate = models.ForeignKey(
@@ -138,8 +148,20 @@ class Product(models.Model):
         ),
     )
     
-    stock_quantity = models.IntegerField(default=0)
-    low_stock_threshold = models.IntegerField(default=10)
+    stock_quantity = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text='On-hand quantity in pieces or kilograms, matching unit type.',
+    )
+    low_stock_threshold = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        default=10,
+        validators=[MinValueValidator(0)],
+        help_text='Low-stock warning level in pieces or kilograms.',
+    )
     
     image = models.ImageField(upload_to='products/', null=True, blank=True)
     barcode_image = models.ImageField(upload_to='products/barcodes/', null=True, blank=True)
@@ -228,6 +250,18 @@ class Product(models.Model):
         return self.get_stock_batch(ProductStockBatch.TIER_NEW)
 
     @property
+    def is_sold_by_kilo(self):
+        return self.unit_type == UNIT_KILO
+
+    @property
+    def stock_unit_suffix(self):
+        return 'kg' if self.is_sold_by_kilo else 'pcs'
+
+    def format_stock(self, quantity=None, *, with_unit=True):
+        qty = self.stock_quantity if quantity is None else quantity
+        return format_qty_display(qty, self.unit_type, with_unit=with_unit)
+
+    @property
     def is_giveaway(self):
         """All active products are eligible for staff Record Giveaway."""
         return self.is_active
@@ -264,9 +298,9 @@ class Product(models.Model):
 
 class ProductSaleUnit(models.Model):
     """
-    Alternate ways to sell the same product — e.g. pencil by piece (retail)
-    or by box (wholesale). Stock is always tracked in base pieces on Product;
-    checkout deducts quantity × units_per_package from stock_quantity.
+    Alternate ways to sell the same product — e.g. pencil by piece (retail),
+    rice by kilogram, or a box (wholesale). Stock is tracked on Product in
+    pieces or kilograms; wholesale deducts quantity × units_per_package.
     """
 
     SALE_MODE_RETAIL = 'retail'
@@ -285,11 +319,11 @@ class ProductSaleUnit(models.Model):
         max_length=20,
         choices=SALE_MODE_CHOICES,
         default=SALE_MODE_RETAIL,
-        help_text='Retail = sold per piece. Wholesale = sold per box, pack, or case.',
+        help_text='Retail = sold per piece or per kg. Wholesale = sold per box, pack, or case.',
     )
     unit_label = models.CharField(
         max_length=50,
-        help_text='Shown on receipts and admin (e.g. "Piece", "Box of 12").',
+        help_text='Shown on receipts and admin (e.g. "Piece", "Kilogram", "Box of 12").',
     )
     barcode = models.CharField(
         max_length=100,
@@ -304,8 +338,8 @@ class ProductSaleUnit(models.Model):
     units_per_package = models.PositiveIntegerField(
         default=1,
         help_text=(
-            'Base pieces consumed from inventory per 1 of this sale unit. '
-            'Use 1 for per-piece; e.g. 12 when one box contains 12 pencils.'
+            'Base stock units consumed per 1 of this sale unit. '
+            'Use 1 for per-piece or per-kg; e.g. 12 when one box contains 12 pencils.'
         ),
     )
     is_active = models.BooleanField(default=True)
@@ -478,24 +512,27 @@ class ProductStockBatch(models.Model):
     tier = models.CharField(
         max_length=10,
         choices=TIER_CHOICES,
-        help_text='Old stock = remaining units. New stock = newly received units.',
+        help_text='Old stock = remaining units. New stock = newly received units. Quantities are pieces or kg.',
     )
-    quantity = models.PositiveIntegerField(
+    quantity = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
         default=0,
-        help_text='Units on hand in this tier.',
+        validators=[MinValueValidator(0)],
+        help_text='Units on hand in this tier (pieces or kilograms).',
     )
     unit_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         verbose_name='Selling price',
-        help_text='Selling price per unit for this stock tier (₱).',
+        help_text='Selling price per piece or per kg for this stock tier (₱).',
     )
     cost = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         default=0.00,
         verbose_name='Buying price',
-        help_text='Buying / purchase cost per unit for this stock tier (₱).',
+        help_text='Buying / purchase cost per piece or per kg for this stock tier (₱).',
     )
     notes = models.TextField(
         blank=True,
@@ -539,9 +576,9 @@ class StockTransaction(models.Model):
 
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='stock_transactions')
     transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPES)
-    quantity = models.IntegerField()
-    stock_before = models.IntegerField()
-    stock_after = models.IntegerField()
+    quantity = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    stock_before = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    stock_after = models.DecimalField(max_digits=14, decimal_places=3, default=0)
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -591,14 +628,16 @@ class ProductStockHistory(models.Model):
         default=CHANGE_EDIT,
     )
 
-    old_stock_before = models.IntegerField(default=0)
-    old_stock_after = models.IntegerField(default=0)
-    new_stock_before = models.IntegerField(default=0)
-    new_stock_after = models.IntegerField(default=0)
-    total_before = models.IntegerField(default=0)
-    total_after = models.IntegerField(default=0)
+    old_stock_before = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    old_stock_after = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    new_stock_before = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    new_stock_after = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    total_before = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    total_after = models.DecimalField(max_digits=14, decimal_places=3, default=0)
 
-    quantity_sold = models.PositiveIntegerField(
+    quantity_sold = models.DecimalField(
+        max_digits=14,
+        decimal_places=3,
         default=0,
         help_text='Units sold in this event (only for sale changes).',
     )

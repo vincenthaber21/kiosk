@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db.models import Q
 
@@ -14,6 +14,7 @@ from .pricing import (
     price_payload_for_product,
     unit_price_after_discounts,
 )
+from .units import is_kilo_product, qty_json, retail_unit_label
 
 
 def cart_line_key(product_id, sale_unit_id=None) -> str:
@@ -28,21 +29,23 @@ def cart_item_units_per_package(item: dict) -> int:
     return max(1, upp)
 
 
-def cart_item_stock_pieces(item: dict) -> int:
+def cart_item_stock_pieces(item: dict):
     try:
-        qty = int(item.get('quantity') or 0)
-    except (TypeError, ValueError):
-        return 0
-    return qty * cart_item_units_per_package(item)
+        qty = Decimal(str(item.get('quantity') or 0))
+    except (TypeError, ValueError, InvalidOperation):
+        return Decimal('0')
+    if qty <= 0:
+        return Decimal('0')
+    return qty * Decimal(cart_item_units_per_package(item))
 
 
-def aggregate_cart_stock_pieces(items: list[dict]) -> dict[int, int]:
-    demand: dict[int, int] = {}
+def aggregate_cart_stock_pieces(items: list[dict]) -> dict[int, Decimal]:
+    demand: dict[int, Decimal] = {}
     for item in items:
         pid = item.get('product_id')
         if pid is None:
             continue
-        demand[int(pid)] = demand.get(int(pid), 0) + cart_item_stock_pieces(item)
+        demand[int(pid)] = demand.get(int(pid), Decimal('0')) + cart_item_stock_pieces(item)
     return demand
 
 
@@ -89,10 +92,11 @@ def get_sale_unit_for_cart_item(product: Product, item: dict):
     )
 
 
-def sellable_quantity(product: Product, sale_unit: ProductSaleUnit | None) -> int:
+def sellable_quantity(product: Product, sale_unit: ProductSaleUnit | None):
     if sale_unit and sale_unit.sale_mode == ProductSaleUnit.SALE_MODE_WHOLESALE:
-        return product.stock_quantity // max(1, sale_unit.units_per_package)
-    return product.stock_quantity
+        pack = max(1, sale_unit.units_per_package)
+        return qty_json(Decimal(str(product.stock_quantity or 0)) // pack)
+    return qty_json(product.stock_quantity)
 
 
 def kiosk_product_tax_payload(product: Product) -> dict:
@@ -120,20 +124,22 @@ def _price_payload_extras(pf: dict) -> dict:
 
 def kiosk_line_pricing(
     product: Product,
-    quantity: int,
+    quantity,
     *,
     sale_unit: ProductSaleUnit | None = None,
     discount_list=None,
     member=None,
     segment_rules=None,
 ) -> dict:
-    """Unit + line pricing for one cart row (piece or wholesale box)."""
-    qty = max(1, int(quantity or 1))
+    """Unit + line pricing for one cart row (piece, kilo, or wholesale box)."""
+    qty = Decimal(str(quantity or 0))
+    if qty <= 0:
+        qty = Decimal('1')
 
     if sale_unit and sale_unit.sale_mode == ProductSaleUnit.SALE_MODE_WHOLESALE:
         unit_price = Decimal(str(sale_unit.price))
         regular = unit_price
-        line_gross = (unit_price * Decimal(qty)).quantize(Decimal('0.01'))
+        line_gross = (unit_price * qty).quantize(Decimal('0.01'))
         pf = {'price': str(unit_price), 'regular_price': str(regular)}
     else:
         base_regular = fifo_weighted_unit_price(product, qty)
@@ -144,7 +150,7 @@ def kiosk_line_pricing(
             segment_rules=segment_rules,
             regular=base_regular,
         )
-        line_gross = (Decimal(str(unit_price)) * Decimal(qty)).quantize(Decimal('0.01'))
+        line_gross = (Decimal(str(unit_price)) * qty).quantize(Decimal('0.01'))
         pf = price_payload_for_product(
             product,
             discount_list=discount_list or [],
@@ -216,7 +222,11 @@ def kiosk_scan_product_payload(
         'units_per_package': units_per_package,
         'sale_unit_id': sale_unit.id if sale_unit else None,
         'sale_mode': sale_unit.sale_mode if sale_unit else ProductSaleUnit.SALE_MODE_RETAIL,
-        'unit_label': sale_unit.unit_label if sale_unit else 'Piece',
+        'unit_label': sale_unit.unit_label if sale_unit else retail_unit_label(
+            getattr(product, 'unit_type', None)
+        ),
+        'unit_type': getattr(product, 'unit_type', 'piece') or 'piece',
+        'is_kilo': is_kilo_product(product),
         'is_wholesale': is_wholesale,
         'cart_line_key': cart_line_key(product.id, sale_unit.id if sale_unit else None),
         **_price_payload_extras(pricing),

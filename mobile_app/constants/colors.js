@@ -1,8 +1,8 @@
-// Ortega Multi-Purpose Cooperative palette (logo: orange + green)
+// Bagnos Multi-Purpose Cooperative palette (logo: red + yellow)
 export const colors = {
   // Primary colors
-  brand: '#F58220',        // Logo orange — primary actions / highlights
-  accent: '#00A651',       // Logo green — secondary / nature accents
+  brand: '#ED1C24',        // Logo red — primary actions / highlights
+  accent: '#E6C200',       // Logo yellow — secondary / star accents
   dark: '#0f172a',         // Dark for navigation
 
   // Neutral colors
@@ -11,9 +11,9 @@ export const colors = {
   background: '#f1f5f9',    // Light gray background
 
   // Status colors
-  success: '#00A651',       // Green for success/completed
-  warning: '#f97316',       // Orange for pending/warning
-  error: '#ef4444',         // Red for error/cancelled
+  success: '#16a34a',       // Green for success/completed
+  warning: '#E6C200',       // Gold for pending/warning
+  error: '#b91c1c',         // Dark red for error/cancelled
   info: '#0ea5e9',          // Blue for info
 
   // Text colors
@@ -27,6 +27,6 @@ export const colors = {
   borderLight: '#f0f0f0',
 
   // Payment method colors (from TransactionsScreen)
-  debit: '#00A651',         // Green for Debit
+  debit: '#16a34a',         // Green for Debit
   cash: '#0ea5e9',          // Blue for Cash
 };

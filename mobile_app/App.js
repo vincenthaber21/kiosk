@@ -62,7 +62,7 @@ function MainTabs() {
 
           return <Ionicons name={iconName} size={size} color={color} />;
         },
-        tabBarActiveTintColor: '#F58220',
+        tabBarActiveTintColor: '#ED1C24',
         tabBarInactiveTintColor: '#94a3b8',
         headerShown: false,
       })}
@@ -224,7 +224,7 @@ export default function App() {
             </Text>
           </View>
         ) : null}
-        <ActivityIndicator style={bootStyles.spinner} color="#F58220" />
+        <ActivityIndicator style={bootStyles.spinner} color="#ED1C24" />
       </View>
     );
   }

@@ -53,7 +53,7 @@ module.exports = {
     android: {
       adaptiveIcon: {
         foregroundImage: "./assets/icon.png",
-        backgroundColor: "#F58220"
+        backgroundColor: "#ED1C24"
       },
       package: "com.coopkiosk.mobile",
       // CRITICAL: Allow HTTP (cleartext) traffic for local network connections

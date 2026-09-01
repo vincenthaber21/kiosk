@@ -15,7 +15,7 @@ from collections import defaultdict
 
 from django.conf import settings
 from django.db import models, connection, transaction
-from django.db.models import Sum, Count, Avg, Q, F, Prefetch, Value, IntegerField
+from django.db.models import Sum, Count, Avg, Q, F, Prefetch, Value, IntegerField, DecimalField
 from django.db.models.functions import TruncDate, TruncMonth, TruncWeek, Coalesce
 from django.core.cache import cache
 from django.utils import timezone
@@ -398,7 +398,11 @@ class DashboardDataService:
         ).values(
             'product_id', 'product_name', 'product_barcode'
         ).annotate(
-            total_sold=Coalesce(Sum('quantity'), 0),
+            total_sold=Coalesce(
+                Sum('quantity'),
+                Value(0, output_field=DecimalField(max_digits=14, decimal_places=3)),
+                output_field=DecimalField(max_digits=14, decimal_places=3),
+            ),
             total_revenue=Coalesce(Sum('total_price'), Decimal('0.00')),
             transaction_count=Count('transaction_id', distinct=True)
         ).order_by('-total_sold')[:limit]

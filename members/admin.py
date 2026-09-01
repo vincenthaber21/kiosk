@@ -3,12 +3,15 @@ from django.contrib.admin.widgets import AutocompleteSelectMultiple
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
+from decimal import Decimal
 from import_export.admin import ExportMixin, ImportExportModelAdmin
 from .models import (
     Role,
+    MemberStatus,
     MemberType,
     Member,
     BalanceTransaction,
+    ShareCapitalTransaction,
     DeletedMember,
     CardBalanceRefill,
     SeniorCitizenProfile,
@@ -19,18 +22,21 @@ from .models import (
 )
 from .resources import (
     BalanceTransactionResource,
+    ShareCapitalTransactionResource,
     CardBalanceRefillResource,
     ConcessionDiscountPolicyResource,
     DeletedMemberResource,
     MemberEditHistoryResource,
     MemberResource,
     MemberTypeResource,
+    MemberStatusResource,
     PWDProfileResource,
     RoleResource,
     SegmentProductGroupDiscountResource,
     SeniorCitizenProfileResource,
 )
 from django import forms
+from django.contrib.admin.widgets import AdminSplitDateTime
 from django.utils.html import format_html, mark_safe
 from django.contrib import messages
 from django.template.response import TemplateResponse
@@ -112,9 +118,18 @@ class MemberPinForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        for name in ('username', 'rfid_card_number', 'email', 'phone', 'pin'):
+        for name in ('username', 'rfid_card_number', 'email', 'phone', 'pin', 'date_joined'):
             if name in self.fields:
                 self.fields[name].required = False
+        if 'date_joined' in self.fields:
+            self.fields['date_joined'].label = 'Registration date'
+            self.fields['date_joined'].widget = AdminSplitDateTime()
+            self.fields['date_joined'].help_text = (
+                'Exact date and time this member registered. Defaults to now if left blank. '
+                'Used for loan eligibility waiting period.'
+            )
+            if not (self.instance and self.instance.pk) and not self.initial.get('date_joined'):
+                self.initial['date_joined'] = timezone.now()
         if self.instance and self.instance.pk and self.instance.pin_hash:
             self.fields['pin'].help_text = (
                 'PIN is already set. Leave blank to keep it, or enter a new 4-digit PIN to change it.'
@@ -122,6 +137,12 @@ class MemberPinForm(forms.ModelForm):
         else:
             self.fields['pin'].help_text = (
                 'Optional. Enter a 4-digit PIN for kiosk/login use. Leave blank if not needed.'
+            )
+        if 'inactive_remark' in self.fields:
+            self.fields['inactive_remark'].required = False
+            self.fields['inactive_remark'].widget = forms.Textarea(attrs={'rows': 3})
+            self.fields['inactive_remark'].help_text = (
+                'Required when the member is inactive. Explain why the account was deactivated.'
             )
 
     def clean_pin(self):
@@ -131,9 +152,26 @@ class MemberPinForm(forms.ModelForm):
                 raise forms.ValidationError('PIN must be exactly 4 digits')
         return pin
 
+    def clean(self):
+        cleaned = super().clean()
+        is_active = cleaned.get('is_active', True)
+        remark = (cleaned.get('inactive_remark') or '').strip()
+        if not is_active and not remark:
+            self.add_error(
+                'inactive_remark',
+                'Please enter a remark explaining why this member is inactive.',
+            )
+        elif is_active:
+            cleaned['inactive_remark'] = ''
+        else:
+            cleaned['inactive_remark'] = remark
+        return cleaned
+
     def save(self, commit=True):
         pin = self.cleaned_data.get('pin')
         instance = super().save(commit=False)
+        if not instance.date_joined:
+            instance.date_joined = timezone.now()
         if pin:
             instance.set_pin(pin)
             if commit:
@@ -174,6 +212,16 @@ class RoleAdmin(ImportExportModelAdmin):
     ordering = ["sort_order", "name"]
 
 
+@admin.register(MemberStatus)
+class MemberStatusAdmin(ImportExportModelAdmin):
+    resource_classes = [MemberStatusResource]
+    list_display = ["name", "slug", "sort_order", "is_active"]
+    list_filter = ["is_active"]
+    search_fields = ["name", "slug"]
+    ordering = ["sort_order", "name"]
+    prepopulated_fields = {"slug": ("name",)}
+
+
 @admin.register(MemberType)
 class MemberTypeAdmin(ImportExportModelAdmin):
     resource_classes = [MemberTypeResource]
@@ -202,6 +250,59 @@ class PWDProfileInline(admin.StackedInline):
     extra = 0
     max_num = 1
     can_delete = True
+
+
+class ShareCapitalTransactionInline(admin.TabularInline):
+    """History + add deposit/withdrawal rows when editing a member."""
+
+    model = ShareCapitalTransaction
+    extra = 0
+    fields = (
+        "transaction_number",
+        "transaction_type",
+        "amount",
+        "balance_before",
+        "balance_after",
+        "notes",
+        "performed_by",
+        "created_at",
+    )
+    readonly_fields = (
+        "transaction_number",
+        "balance_before",
+        "balance_after",
+        "performed_by",
+        "created_at",
+    )
+    ordering = ("-created_at",)
+    show_change_link = True
+    can_delete = False
+    verbose_name = "Share capital movement"
+    verbose_name_plural = "Share capital history"
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("performed_by")
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def get_extra(self, request, obj=None, **kwargs):
+        # Allow one blank row when editing an existing member.
+        return 1 if obj and obj.pk else 0
+
+    def get_max_num(self, request, obj=None, **kwargs):
+        if obj and obj.pk:
+            return None
+        return 0
+
+    def formfield_for_choice_field(self, db_field, request, **kwargs):
+        if db_field.name == "transaction_type":
+            kwargs["choices"] = [
+                ("deposit", "Deposit"),
+                ("withdrawal", "Withdrawal"),
+                ("adjustment", "Adjustment"),
+            ]
+        return super().formfield_for_choice_field(db_field, request, **kwargs)
 
 
 @admin.register(SegmentProductGroupDiscount)
@@ -270,24 +371,59 @@ class PWDProfileAdmin(ImportExportModelAdmin):
 class MemberAdmin(ImportExportModelAdmin):
     resource_classes = [MemberResource]
     form = MemberPinForm
-    inlines = [SeniorCitizenProfileInline, PWDProfileInline]
-    list_display = ['full_name', 'username', 'email', 'rfid_card_number', 'member_role', 'balance', 'is_active', 'pin_set', 'pin_lockout_status', 'qr_code_thumbnail']
+    inlines = [SeniorCitizenProfileInline, PWDProfileInline, ShareCapitalTransactionInline]
+    list_display = [
+        'full_name',
+        'username',
+        'email',
+        'rfid_card_number',
+        'member_role',
+        'balance',
+        'share_capital',
+        'is_active',
+        'date_joined',
+        'loan_eligibility_status',
+        'pin_set',
+        'pin_lockout_status',
+        'qr_code_thumbnail',
+    ]
     list_filter = ['member_role', 'is_active', 'is_pin_locked']
-    search_fields = ['first_name', 'last_name', 'rfid_card_number', 'email', 'user__username']
-    readonly_fields = ['created_at', 'updated_at', 'qr_code_display', 'date_joined', 'last_transaction', 'pin_status']
+    search_fields = [
+        'first_name',
+        'middle_name',
+        'last_name',
+        'rfid_card_number',
+        'email',
+        'user__username',
+        'rsbsa_number',
+        'tin',
+    ]
+    readonly_fields = [
+        'created_at',
+        'updated_at',
+        'qr_code_display',
+        'last_transaction',
+        'pin_status',
+        'loan_eligibility_display',
+    ]
     actions = ['soft_delete_selected', 'hard_delete_selected', 'reset_pin_lockout']
 
     def get_readonly_fields(self, request, obj=None):
         readonly = list(self.readonly_fields)
         if not obj or not obj.pk:
             readonly = [f for f in readonly if f != 'pin_status']
+        else:
+            # After create, change share capital via the history inline only.
+            readonly = list(readonly) + ['share_capital']
         return readonly
 
     def get_changeform_initial_data(self, request):
         member_role_id = Role.objects.filter(slug='member').values_list('pk', flat=True).first()
         initial = {
             'balance': '0.00',
+            'share_capital': '0.00',
             'is_active': True,
+            'date_joined': timezone.now(),
         }
         if member_role_id:
             initial['member_role'] = member_role_id
@@ -299,24 +435,183 @@ class MemberAdmin(ImportExportModelAdmin):
             if obj and obj.pk
             else ('pin', 'pin_attempts', 'is_pin_locked')
         )
+        loan_eligibility_fields = ('date_joined', 'loan_eligibility_display') if obj and obj.pk else ('date_joined',)
+        share_capital_description = (
+            'Enter the member\'s current <strong>paid-up share capital</strong>. '
+            'Saving with an amount greater than zero creates an <strong>Opening deposit</strong> '
+            'in share capital history.'
+            if not (obj and obj.pk)
+            else (
+                'Current paid-up share capital. Record new deposits or withdrawals in the '
+                '<strong>Share capital history</strong> section below.'
+            )
+        )
         base = [
             (
                 None,
                 {
-                    'fields': ('username', 'rfid_card_number', 'first_name', 'last_name', 'email', 'phone'),
+                    'fields': (
+                        'username',
+                        'rfid_card_number',
+                        'first_name',
+                        'middle_name',
+                        'last_name',
+                        'email',
+                        'phone',
+                    ),
                     'description': (
                         'Only <strong>first name</strong> and <strong>last name</strong> are required. '
                         'Everything else is optional unless your co-op needs it.'
                     ),
                 },
             ),
-            ('Role', {'fields': ('member_role', 'balance', 'is_active')}),
+            (
+                'Address & personal details',
+                {
+                    'fields': (
+                        'barangay',
+                        'municipality',
+                        'province',
+                        'date_of_birth',
+                        'age',
+                        'gender',
+                        'tin',
+                        'civil_status',
+                        'religion',
+                        'educational_attainment',
+                        'occupation',
+                    ),
+                    'classes': ('collapse',),
+                },
+            ),
+            (
+                'Membership / RSBSA',
+                {
+                    'fields': (
+                        'coop_type',
+                        'area',
+                        'member_status',
+                        'membership_status',
+                        'location',
+                        'rsbsa_remarks',
+                        'rsbsa_number',
+                        'income_sources',
+                        'annual_income',
+                        'other_assets',
+                    ),
+                    'classes': ('collapse',),
+                },
+            ),
+            (
+                'Spouse / partner',
+                {
+                    'fields': ('spouse_name', 'spouse_occupation'),
+                    'classes': ('collapse',),
+                },
+            ),
+            (
+                'Acceptance & capital',
+                {
+                    'fields': (
+                        'date_of_pmes',
+                        'resolution_number',
+                        'date_accepted',
+                        'or_number',
+                        'initial_capital_paid_up',
+                        'date_of_mf_recog',
+                        'mf_center',
+                    ),
+                    'classes': ('collapse',),
+                },
+            ),
+            ('Role', {'fields': ('member_role', 'balance', 'is_active', 'inactive_remark')}),
+            (
+                'Share capital',
+                {
+                    'fields': ('share_capital',),
+                    'description': share_capital_description,
+                },
+            ),
             ('Security', {'fields': security_fields}),
-            ('Timestamps', {'fields': ('date_joined', 'last_transaction', 'created_at', 'updated_at'), 'classes': ('collapse',)}),
+            (
+                'Loan eligibility',
+                {
+                    'fields': loan_eligibility_fields,
+                    'description': (
+                        'Enter the exact <strong>registration date</strong> when this member joined. '
+                        'Loan requests are allowed only after the waiting period set in '
+                        '<strong>Loans → Loan Settings → Minimum membership months</strong>. '
+                        'Leave blank to use the current date and time.'
+                    ),
+                },
+            ),
+            ('Timestamps', {'fields': ('last_transaction', 'created_at', 'updated_at'), 'classes': ('collapse',)}),
         ]
         if obj and obj.pk:
             base.insert(0, ('QR Code', {'fields': ('qr_code_display',), 'description': 'Member\'s unique QR code for fund transfers via the mobile app.'}))
         return base
+
+    def save_model(self, request, obj, form, change):
+        creating = not change
+        opening_amount = Decimal("0.00")
+        if creating:
+            opening_amount = obj.share_capital or Decimal("0.00")
+            if opening_amount < 0:
+                opening_amount = Decimal("0.00")
+                obj.share_capital = Decimal("0.00")
+        obj.sync_age_from_dob()
+        super().save_model(request, obj, form, change)
+        if creating and opening_amount > 0:
+            ShareCapitalTransaction.objects.create(
+                member=obj,
+                transaction_type="opening",
+                amount=opening_amount,
+                balance_before=Decimal("0.00"),
+                balance_after=opening_amount,
+                notes="Opening share capital on member registration",
+                performed_by=request.user if request.user.is_authenticated else None,
+            )
+
+    def save_formset(self, request, form, formset, change):
+        if formset.model is not ShareCapitalTransaction:
+            return super().save_formset(request, form, formset, change)
+
+        instances = formset.save(commit=False)
+        member = form.instance
+        for obj in instances:
+            if obj.pk:
+                continue
+            amount = obj.amount or Decimal("0.00")
+            if amount <= 0:
+                continue
+            txn_type = obj.transaction_type or "deposit"
+            if txn_type == "opening":
+                txn_type = "deposit"
+            member.refresh_from_db(fields=["share_capital"])
+            before = member.share_capital or Decimal("0.00")
+            if txn_type == "withdrawal":
+                if amount > before:
+                    messages.error(
+                        request,
+                        f"Cannot withdraw ₱{amount}: share capital is only ₱{before}.",
+                    )
+                    continue
+                after = before - amount
+                member.share_capital = after
+            else:
+                # deposit / adjustment treated as credit
+                if txn_type not in ("deposit", "adjustment"):
+                    txn_type = "deposit"
+                after = before + amount
+                member.share_capital = after
+            member.save(update_fields=["share_capital", "updated_at"])
+            obj.member = member
+            obj.transaction_type = txn_type
+            obj.balance_before = before
+            obj.balance_after = after
+            obj.performed_by = request.user if request.user.is_authenticated else None
+            obj.save()
+        formset.save_m2m()
 
     def pin_status(self, obj):
         if not obj or not obj.pk:
@@ -336,6 +631,72 @@ class MemberAdmin(ImportExportModelAdmin):
             '</span>'
         )
     pin_status.short_description = 'PIN status'
+
+    def loan_eligibility_status(self, obj):
+        if not obj or not obj.pk:
+            return '—'
+        info = obj.get_loan_eligibility()
+        if info['allowed']:
+            return mark_safe('<span style="color:#2e7d32;font-weight:600;">Eligible</span>')
+        return mark_safe('<span style="color:#c62828;font-weight:600;">Not yet</span>')
+
+    loan_eligibility_status.short_description = 'Loan eligible?'
+
+    def loan_eligibility_display(self, obj):
+        if not obj or not obj.pk:
+            return '—'
+
+        info = obj.get_loan_eligibility()
+        required = info['required_months']
+        joined = info['joined_on'] or obj.date_joined
+        month_word = 'month' if required == 1 else 'months'
+
+        if required <= 0:
+            return format_html(
+                '<span style="color:#2e7d32;font-weight:600;">Eligible now</span>'
+                '<br><span style="color:#666;font-size:12px;">'
+                'Loan waiting period is disabled (0 months required).</span>'
+            )
+
+        joined_local = timezone.localtime(joined) if joined and timezone.is_aware(joined) else joined
+        joined_text = joined_local.strftime('%B %d, %Y %I:%M %p') if joined_local else 'Unknown'
+
+        if info['allowed']:
+            return format_html(
+                '<span style="color:#2e7d32;font-weight:600;">Eligible for loan requests</span>'
+                '<br><span style="color:#666;font-size:12px;">'
+                'Registered: {}<br>'
+                'Required waiting period: {} {}</span>',
+                joined_text,
+                required,
+                month_word,
+            )
+
+        eligible_on = info.get('eligible_on')
+        eligible_local = (
+            timezone.localtime(eligible_on)
+            if eligible_on and timezone.is_aware(eligible_on)
+            else eligible_on
+        )
+        eligible_text = eligible_local.strftime('%B %d, %Y') if eligible_local else '—'
+        return format_html(
+            '<span style="color:#c62828;font-weight:600;">Not yet eligible</span>'
+            '<br><span style="color:#666;font-size:12px;">'
+            'Registered: {}<br>'
+            'Required waiting period: {} {}<br>'
+            'Can request a loan starting: {}</span>',
+            joined_text,
+            required,
+            month_word,
+            eligible_text,
+        )
+
+    loan_eligibility_display.short_description = 'Loan eligibility status'
+
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.date_joined:
+            obj.date_joined = timezone.now()
+        super().save_model(request, obj, form, change)
 
     # ── QR helpers ────────────────────────────────────────────────────────────
 
@@ -456,6 +817,7 @@ class MemberAdmin(ImportExportModelAdmin):
             member_type_name=member.member_type.name if member.member_type else None,
             role=member.role,
             balance=member.balance,
+            share_capital=member.share_capital,
             username=member.user.username if member.user else None,
             pin_hash=member.pin_hash,
             deleted_by=deleted_by_username,
@@ -509,6 +871,70 @@ class BalanceTransactionAdmin(ExportMixin, admin.ModelAdmin):
     list_filter = ['transaction_type', 'created_at']
     search_fields = ['transaction_number', 'member__first_name', 'member__last_name', 'member__rfid_card_number']
     readonly_fields = ['transaction_number', 'created_at']
+
+
+@admin.register(ShareCapitalTransaction)
+class ShareCapitalTransactionAdmin(ExportMixin, admin.ModelAdmin):
+    resource_classes = [ShareCapitalTransactionResource]
+    list_display = [
+        'transaction_number',
+        'member',
+        'transaction_type',
+        'amount',
+        'balance_before',
+        'balance_after',
+        'performed_by',
+        'created_at',
+    ]
+    list_filter = ['transaction_type', 'created_at']
+    search_fields = [
+        'transaction_number',
+        'member__first_name',
+        'member__last_name',
+        'member__rfid_card_number',
+        'notes',
+    ]
+    readonly_fields = [
+        'transaction_number',
+        'balance_before',
+        'balance_after',
+        'performed_by',
+        'created_at',
+    ]
+    autocomplete_fields = ['member']
+
+    def save_model(self, request, obj, form, change):
+        if change:
+            super().save_model(request, obj, form, change)
+            return
+        member = obj.member
+        amount = obj.amount or Decimal("0.00")
+        if amount <= 0:
+            messages.error(request, "Amount must be greater than zero.")
+            return
+        txn_type = obj.transaction_type or "deposit"
+        if txn_type == "opening":
+            txn_type = "deposit"
+        before = member.share_capital or Decimal("0.00")
+        if txn_type == "withdrawal":
+            if amount > before:
+                messages.error(
+                    request,
+                    f"Cannot withdraw ₱{amount}: share capital is only ₱{before}.",
+                )
+                return
+            after = before - amount
+        else:
+            if txn_type not in ("deposit", "adjustment"):
+                txn_type = "deposit"
+            after = before + amount
+        member.share_capital = after
+        member.save(update_fields=["share_capital", "updated_at"])
+        obj.transaction_type = txn_type
+        obj.balance_before = before
+        obj.balance_after = after
+        obj.performed_by = request.user if request.user.is_authenticated else None
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(CardBalanceRefill)
@@ -646,6 +1072,7 @@ class DeletedMemberAdmin(ExportMixin, admin.ModelAdmin):
                     member_type=member_type,
                     member_role=Role.resolve_slug(deleted_member.role),
                     balance=deleted_member.balance,
+                    share_capital=getattr(deleted_member, "share_capital", Decimal("0.00")) or Decimal("0.00"),
                     user=user,
                     pin_hash=deleted_member.pin_hash,
                     is_active=True,

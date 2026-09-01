@@ -5,16 +5,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Member Management | {{ kiosk_system_name }}</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  {% include "partials/bootstrap_head.html" %}
   <style>
     :root {
       --dark: #0f172a;
-      --brand: #F58220;
-      --accent: #00A651;
+      --brand: #ED1C24;
+      --accent: #E6C200;
       --muted: #94a3b8;
       --panel: #ffffff;
-      --gradient: linear-gradient(135deg, #F58220 0%, #E06B00 40%, #00A651 100%);
+      --gradient: linear-gradient(135deg, #ED1C24 0%, #C4121A 40%, #8B0E14 100%);
     }
 
     body {
@@ -129,6 +128,17 @@
       margin-bottom: 0;
     }
 
+    .inactive-remark-box {
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+    }
+    .inactive-remark-box .form-label {
+      color: #9a3412;
+      font-weight: 600;
+    }
+
     .member-form-section-title {
       font-size: 0.6875rem;
       font-weight: 700;
@@ -180,7 +190,7 @@
     .member-modal .form-control:focus,
     .member-modal .form-select:focus {
       border-color: var(--brand);
-      box-shadow: 0 0 0 3px rgba(245, 130, 32, 0.12);
+      box-shadow: 0 0 0 3px rgba(237, 28, 36, 0.12);
     }
 
     .member-stat-grid .stat-card {
@@ -275,8 +285,8 @@
     }
 
     .btn-member-primary:hover {
-      background: var(--accent);
-      border-color: var(--accent);
+      background: #C4121A;
+      border-color: #C4121A;
       color: #fff;
     }
 
@@ -454,9 +464,20 @@
       color: #6b21a8;
     }
 
+    .role-loan_officer,
+    .role-loan-officer {
+      background: #e0e7ff;
+      color: #3730a3;
+    }
+
     .role-member {
       background: #d1fae5;
       color: #065f46;
+    }
+
+    .role-committee {
+      background: #fce7f3;
+      color: #9d174d;
     }
 
     /* Custom dashboard roles (e.g. Django Role slug re-seller / reseller) */
@@ -544,7 +565,7 @@
       margin: 0;
     }
     #logoutConfirmModal .modal-header .modal-title i {
-      color: #F58220;
+      color: #ED1C24;
       font-size: 1.8rem;
     }
     #logoutConfirmModal .modal-body {
@@ -553,7 +574,7 @@
     }
     #logoutConfirmModal .modal-body .warning-icon {
       font-size: 4rem;
-      color: #F58220;
+      color: #ED1C24;
       margin-bottom: 20px;
       display: block;
     }
@@ -592,15 +613,15 @@
       box-shadow: 0 4px 12px rgba(108, 117, 125, 0.3);
     }
     #logoutConfirmModal .modal-footer .btn-confirm {
-      background: linear-gradient(135deg, #F58220, #E06B00);
-      border: 2px solid #F58220;
+      background: linear-gradient(135deg, #ED1C24, #C4121A);
+      border: 2px solid #ED1C24;
       color: white;
     }
     #logoutConfirmModal .modal-footer .btn-confirm:hover {
-      background: linear-gradient(135deg, #E06B00, #D96B00);
-      border-color: #D96B00;
+      background: linear-gradient(135deg, #C4121A, #A10F16);
+      border-color: #A10F16;
       transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(245, 130, 32, 0.4);
+      box-shadow: 0 4px 12px rgba(237, 28, 36, 0.4);
     }
 
     /* Member modals — same look as Add member */
@@ -673,12 +694,35 @@
     .member-modal .modal-footer .btn-primary:hover,
     .member-modal #adminAddSaveMemberBtn:hover,
     .member-modal #saveMemberBtn:hover {
-      background: var(--accent);
-      border-color: var(--accent);
+      background: #C4121A;
+      border-color: #C4121A;
     }
     .member-modal .modal-footer .btn-outline-secondary,
     .member-modal .modal-footer .btn-secondary {
       border-radius: 10px;
+    }
+
+    .members-pagination-bar {
+      padding-top: .35rem;
+    }
+    .members-pagination {
+      flex-wrap: nowrap;
+      gap: .2rem;
+    }
+    .members-pagination .page-link {
+      border-radius: 8px !important;
+      min-width: 2rem;
+      text-align: center;
+      font-weight: 600;
+    }
+    .members-pagination .page-item.disabled .page-link {
+      opacity: .55;
+    }
+    @media (max-width: 575.98px) {
+      .members-pagination {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+      }
     }
 
   </style>
@@ -710,7 +754,7 @@
       <div class="col-md-3">
         <div class="stat-card">
           <div class="d-flex align-items-center gap-3">
-            <div class="stat-icon" style="background:#F58220;">
+            <div class="stat-icon" style="background:#ED1C24;">
               <i class="bi bi-people"></i>
             </div>
             <div>
@@ -786,7 +830,7 @@
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="actionsDropdown">
                   <li>
-                    <a class="dropdown-item" href="#" id="backupDataBtn" data-bs-toggle="modal" data-bs-target="#backupDataModal" title="Download backup of all member data">
+                    <a class="dropdown-item" href="#" id="backupDataBtn" title="Download backup of all member data">
                       <i class="bi bi-download me-2 text-primary"></i>Backup Data
                     </a>
                   </li>
@@ -808,6 +852,7 @@
           <div class="member-panel-body">
             <div class="member-form-section">
               <div class="member-form-section-title">Search &amp; filters</div>
+            {{ member_complete_details_map|json_script:"member-complete-details-map" }}
             <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
               <a
                 href="{% url 'member_management' %}?{% if search_query %}search={{ search_query|urlencode }}&{% endif %}{% if credit_filter == 'owed' %}credit=owed&{% endif %}status=all{% if sort_filter == 'za' %}&sort=za{% endif %}#all-members-section"
@@ -927,10 +972,11 @@
                 <tr>
                   <th>Member</th>
                   <th>Username</th>
-                  {% if is_admin %}<th>RFID Card</th>{% endif %}
+                  <th>RFID Card</th>
                   <th>Role</th>
                   <th>Concession</th>
                   <th>Balance</th>
+                  <th>Share capital</th>
                   <th>Credit (utang)</th>
                   <th>Status</th>
                   <th>PIN</th>
@@ -961,7 +1007,7 @@
                     <span class="text-muted">—</span>
                     {% endif %}
                   </td>
-                  {% if is_admin %}<td><code>{% if member.rfid_card_number %}{{ member.rfid_card_number }}{% else %}N/A{% endif %}</code></td>{% endif %}
+                  <td><code>{% if member.rfid_card_number %}{% if is_admin_user %}{{ member.rfid_card_number }}{% else %}{{ member.rfid_card_number|mask_rfid }}{% endif %}{% else %}N/A{% endif %}</code></td>
                   <td>
                     <span class="badge-role role-{{ member.role }}">
                       {{ member.member_role.name }}
@@ -977,7 +1023,14 @@
                     {% endif %}
                   </td>
                   <td>
+                    {% if member.role == 'committee' %}
+                    <span class="text-muted">—</span>
+                    {% else %}
                     <span class="balance-positive">₱{{ member.balance|floatformat:2 }}</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <span class="balance-positive">₱{{ member.share_capital|floatformat:2 }}</span>
                   </td>
                   <td>
                     {% include 'admin_panel/partials/member_credit_table_cell.html' %}
@@ -986,7 +1039,10 @@
                     {% if member.is_active %}
                     <span class="badge bg-success">Active</span>
                     {% else %}
-                    <span class="badge bg-secondary">Inactive</span>
+                    <span class="badge bg-secondary"{% if member.inactive_remark %} title="{{ member.inactive_remark }}"{% endif %}>Inactive</span>
+                    {% if member.inactive_remark %}
+                    <small class="d-block text-muted mt-1" style="max-width:14rem;white-space:normal;line-height:1.3;">{{ member.inactive_remark|truncatechars:80 }}</small>
+                    {% endif %}
                     {% endif %}
                     {% if member.user %}
                     <span class="badge bg-info ms-1">Has Account</span>
@@ -1022,14 +1078,17 @@
                         data-role="{{ member.role }}"
                         data-member-type-id="{{ member.member_type_id|default_if_none:'' }}"
                         data-active="{{ member.is_active }}"
+                        data-inactive-remark="{{ member.inactive_remark|default:''|escapejs }}"
                         data-user-id="{% if member.user %}{{ member.user.id }}{% endif %}"
                         data-username="{{ member.username|default:''|escapejs }}"
                         data-has-user="{% if member.user %}true{% else %}false{% endif %}"
                         data-balance="{{ member.balance }}"
+                        data-share-capital="{{ member.share_capital }}"
                         data-credit-outstanding="{{ member.credit_outstanding }}"
                         {% if credit_limit_enabled %}data-credit-available="{{ member.credit_available }}"{% endif %}
                         data-pin-attempts="{{ member.pin_attempts }}"
                         data-is-pin-locked="{{ member.is_pin_locked }}"
+                        data-date-joined="{% if member.date_joined %}{{ member.date_joined|date:'Y-m-d\TH:i' }}{% endif %}"
                         data-senior-active="{% if member.active_concession_kind == 'senior' %}true{% else %}false{% endif %}"
                         data-senior-osca="{% with sp=member.get_senior_profile_safe %}{% if sp %}{{ sp.osca_id_number|default:''|escapejs }}{% endif %}{% endwith %}"
                         data-senior-notes="{% with sp=member.get_senior_profile_safe %}{% if sp %}{{ sp.notes|default:''|escapejs }}{% endif %}{% endwith %}"
@@ -1044,7 +1103,7 @@
                         class="btn btn-sm btn-outline-success rounded-pill quick-refill-btn" 
                         data-member-id="{{ member.id }}"
                         data-member-name="{{ member.full_name|escapejs }}"
-                        data-member-rfid="{{ member.rfid_card_number|escapejs }}"
+                        data-member-rfid="{% if is_admin_user %}{{ member.rfid_card_number|escapejs }}{% elif member.rfid_card_number %}{{ member.rfid_card_number|mask_rfid|escapejs }}{% endif %}"
                         data-member-balance="{{ member.balance }}"
                         title="Quick Refill"
                       >
@@ -1092,7 +1151,7 @@
                 </tr>
                 {% empty %}
                 <tr>
-                  <td colspan="{% if is_admin %}10{% else %}9{% endif %}" class="text-center text-muted py-4">
+                  <td colspan="11" class="text-center text-muted py-4">
                     {% if credit_filter == 'owed' %}
                     <i class="bi bi-check-circle me-2"></i>No members with outstanding credit right now.
                     {% elif search_query %}
@@ -1108,22 +1167,35 @@
             </table>
           </div>
           {% if members_filtered_total %}
-          <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mt-3 gap-3">
-            <div class="text-muted">
+          <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center mt-3 gap-3 members-pagination-bar">
+            <div class="text-muted small">
               Showing {{ page_obj.start_index }}–{{ page_obj.end_index }} of {{ members_filtered_total }}
+              <span class="text-secondary">· Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
             </div>
+            {% if page_obj.paginator.num_pages > 1 %}
             <nav aria-label="Members pagination">
-              <ul class="pagination pagination-sm mb-0 flex-wrap">
+              <ul class="pagination pagination-sm mb-0 members-pagination">
                 <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
                   {% if page_obj.has_previous %}
-                  <a class="page-link" href="{% url 'member_management' %}?{% if members_list_query %}{{ members_list_query }}&{% endif %}page={{ page_obj.previous_page_number }}#all-members-section" aria-label="Previous">Previous</a>
+                  <a class="page-link" href="{% url 'member_management' %}?{% if members_list_query %}{{ members_list_query }}&{% endif %}page=1#all-members-section" aria-label="First page" title="First page"><i class="bi bi-chevron-bar-left"></i></a>
                   {% else %}
-                  <span class="page-link" aria-label="Previous">Previous</span>
+                  <span class="page-link" aria-label="First page"><i class="bi bi-chevron-bar-left"></i></span>
                   {% endif %}
                 </li>
-                {% for num in page_obj.paginator.page_range %}
-                <li class="page-item {% if page_obj.number == num %}active{% endif %}">
+                <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+                  {% if page_obj.has_previous %}
+                  <a class="page-link" href="{% url 'member_management' %}?{% if members_list_query %}{{ members_list_query }}&{% endif %}page={{ page_obj.previous_page_number }}#all-members-section" aria-label="Previous">Prev</a>
+                  {% else %}
+                  <span class="page-link" aria-label="Previous">Prev</span>
+                  {% endif %}
+                </li>
+                {% for num in members_elided_pages %}
+                <li class="page-item {% if num == page_obj.paginator.ELLIPSIS %}disabled{% elif page_obj.number == num %}active{% endif %}">
+                  {% if num == page_obj.paginator.ELLIPSIS %}
+                  <span class="page-link">{{ num }}</span>
+                  {% else %}
                   <a class="page-link" href="{% url 'member_management' %}?{% if members_list_query %}{{ members_list_query }}&{% endif %}page={{ num }}#all-members-section">{{ num }}</a>
+                  {% endif %}
                 </li>
                 {% endfor %}
                 <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
@@ -1133,8 +1205,16 @@
                   <span class="page-link" aria-label="Next">Next</span>
                   {% endif %}
                 </li>
+                <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+                  {% if page_obj.has_next %}
+                  <a class="page-link" href="{% url 'member_management' %}?{% if members_list_query %}{{ members_list_query }}&{% endif %}page={{ page_obj.paginator.num_pages }}#all-members-section" aria-label="Last page" title="Last page"><i class="bi bi-chevron-bar-right"></i></a>
+                  {% else %}
+                  <span class="page-link" aria-label="Last page"><i class="bi bi-chevron-bar-right"></i></span>
+                  {% endif %}
+                </li>
               </ul>
             </nav>
+            {% endif %}
           </div>
           {% endif %}
             </div>
@@ -1146,7 +1226,7 @@
 
   <!-- Add Member Modal (mirrors /admin/members/member/add/ fieldsets) -->
   <div class="modal fade member-modal" id="addMemberAdminModal" tabindex="-1" aria-labelledby="addMemberAdminModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-xl">
       <div class="modal-content">
         <div class="modal-header text-white">
           <h5 class="modal-title" id="addMemberAdminModalLabel">
@@ -1162,11 +1242,15 @@
             <div class="member-form-section">
               <div class="member-form-section-title">Basic information</div>
               <div class="row g-3">
-                <div class="col-md-6">
+                <div class="col-md-4">
                   <label class="form-label" for="adminAddFirstName">First name <span class="text-danger">*</span></label>
                   <input type="text" class="form-control" id="adminAddFirstName" placeholder="e.g. Juan" required>
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-4">
+                  <label class="form-label" for="adminAddMiddleName">Middle name</label>
+                  <input type="text" class="form-control" id="adminAddMiddleName" placeholder="Optional">
+                </div>
+                <div class="col-md-4">
                   <label class="form-label" for="adminAddLastName">Last name <span class="text-danger">*</span></label>
                   <input type="text" class="form-control" id="adminAddLastName" placeholder="e.g. dela Cruz" required>
                 </div>
@@ -1189,11 +1273,13 @@
                   <input type="email" class="form-control" id="adminAddEmail" placeholder="name@example.com">
                 </div>
                 <div class="col-md-6">
-                  <label class="form-label" for="adminAddPhone">Phone <span class="text-muted fw-normal">(optional)</span></label>
+                  <label class="form-label" for="adminAddPhone">Contact number <span class="text-muted fw-normal">(optional)</span></label>
                   <input type="text" class="form-control" id="adminAddPhone" placeholder="Mobile or landline">
                 </div>
               </div>
             </div>
+
+            {% include 'admin_panel/partials/member_complete_details_fields.html' with id_prefix='adminAdd' %}
 
             <div class="member-form-section">
               <div class="member-form-section-title">Role &amp; account</div>
@@ -1216,7 +1302,7 @@
                     {% endfor %}
                   </select>
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-6" id="adminAddBalanceWrap">
                   <label class="form-label" for="adminAddBalance">Starting balance</label>
                   <div class="input-group">
                     <span class="input-group-text bg-white">₱</span>
@@ -1224,18 +1310,42 @@
                   </div>
                   <small class="text-muted">Usually leave at zero unless you are loading an initial balance.</small>
                 </div>
+                <div class="col-md-6" id="adminAddShareCapitalWrap">
+                  <label class="form-label" for="adminAddShareCapital">Share capital</label>
+                  <div class="input-group">
+                    <span class="input-group-text bg-white">₱</span>
+                    <input type="number" class="form-control" id="adminAddShareCapital" value="0.00" min="0" step="0.01">
+                  </div>
+                  <small class="text-muted">Paid-up share capital. Amounts above zero create an opening deposit in history.</small>
+                </div>
                 <div class="col-12">
                   <div class="form-check">
                     <input class="form-check-input" type="checkbox" id="adminAddIsActive" checked>
                     <label class="form-check-label" for="adminAddIsActive">Account is active</label>
                   </div>
                   <small class="text-muted d-block mt-1" id="adminAddActiveDiscountHint">Active members can use kiosk pricing and discounts tied to their segment.</small>
+                  <div id="adminAddInactiveRemarkWrap" class="inactive-remark-box mt-3" style="display:none;">
+                    <label class="form-label" for="adminAddInactiveRemark">Reason for inactive status <span class="text-danger">*</span></label>
+                    <textarea class="form-control" id="adminAddInactiveRemark" rows="3" maxlength="500" placeholder="Explain why this member is being set as inactive (e.g. resigned, deceased, suspended)."></textarea>
+                    <small class="text-muted">Required when the account is inactive.</small>
+                  </div>
                 </div>
               </div>
             </div>
 
             <div id="memberDiscountSection_add" class="member-form-section member-form-section--discount">
               {% include 'admin_panel/partials/member_concession_modal_fields.html' with suffix='_add' expanded_discount_help=False %}
+            </div>
+
+            <div class="member-form-section">
+              <div class="member-form-section-title">Loan eligibility</div>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label" for="adminAddDateJoined">Registration date</label>
+                  <input type="datetime-local" class="form-control" id="adminAddDateJoined">
+                  <small class="text-muted">Exact date and time the member registered. Used for loan eligibility. Defaults to now if unchanged.</small>
+                </div>
+              </div>
             </div>
 
             <div class="member-form-section">
@@ -1275,7 +1385,7 @@
 
   <!-- Edit Member Modal -->
   <div class="modal fade member-modal" id="memberFormModal" tabindex="-1" aria-labelledby="memberFormModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-xl">
       <div class="modal-content">
         <div class="modal-header text-white">
           <h5 class="modal-title" id="memberFormModalLabel">
@@ -1293,12 +1403,16 @@
             <div class="member-form-section">
               <div class="member-form-section-title">Basic information</div>
               <div class="row g-3">
-                <div class="col-md-6">
-                  <label class="form-label">First name <span class="text-danger">*</span></label>
+                <div class="col-md-4">
+                  <label class="form-label" for="memberFirstName">First name <span class="text-danger">*</span></label>
                   <input type="text" class="form-control" id="memberFirstName" required>
                 </div>
-                <div class="col-md-6">
-                  <label class="form-label">Last name <span class="text-danger">*</span></label>
+                <div class="col-md-4">
+                  <label class="form-label" for="memberMiddleName">Middle name</label>
+                  <input type="text" class="form-control" id="memberMiddleName" placeholder="Optional">
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label" for="memberLastName">Last name <span class="text-danger">*</span></label>
                   <input type="text" class="form-control" id="memberLastName" required>
                 </div>
                 <div class="col-md-6">
@@ -1318,11 +1432,13 @@
                   <input type="email" class="form-control" id="memberEmail" placeholder="name@example.com">
                 </div>
                 <div class="col-md-6">
-                  <label class="form-label">Phone <span class="text-muted fw-normal">(optional)</span></label>
+                  <label class="form-label">Contact number <span class="text-muted fw-normal">(optional)</span></label>
                   <input type="text" class="form-control" id="memberPhone" placeholder="Mobile or landline">
                 </div>
               </div>
             </div>
+
+            {% include 'admin_panel/partials/member_complete_details_fields.html' with id_prefix='member' %}
 
             <div class="member-form-section">
               <div class="member-form-section-title">Role &amp; account</div>
@@ -1345,7 +1461,7 @@
                   {% endfor %}
                 </select>
               </div>
-              <div class="col-md-6">
+              <div class="col-md-6" id="memberBalanceWrap">
                 <label class="form-label">Balance</label>
                 <div class="input-group">
                   <span class="input-group-text">₱</span>
@@ -1353,11 +1469,24 @@
                 </div>
                 <small class="text-muted"><i class="bi bi-lock-fill me-1"></i>Balance is read-only. Use <strong>Refill Card Balance</strong> to add funds.</small>
               </div>
+              <div class="col-md-6" id="memberShareCapitalWrap">
+                <label class="form-label" for="memberShareCapital">Share capital</label>
+                <div class="input-group">
+                  <span class="input-group-text">₱</span>
+                  <input type="number" class="form-control" id="memberShareCapital" value="0.00" min="0" step="0.01">
+                </div>
+                <small class="text-muted">Changing this amount records an <strong>Adjustment</strong> in share capital history.</small>
+              </div>
               {% include 'admin_panel/partials/member_credit_modal_fields.html' %}
-              <div class="col-md-6 d-flex align-items-center">
-                <div class="form-check mt-4">
+              <div class="col-12">
+                <div class="form-check">
                   <input class="form-check-input" type="checkbox" id="memberIsActive" checked>
                   <label class="form-check-label" for="memberIsActive">Active <span class="text-muted fw-normal" id="memberIsActiveDiscountHint">(required for member discount pricing at kiosk)</span></label>
+                </div>
+                <div id="memberInactiveRemarkWrap" class="inactive-remark-box mt-3" style="display:none;">
+                  <label class="form-label" for="memberInactiveRemark">Reason for inactive status <span class="text-danger">*</span></label>
+                  <textarea class="form-control" id="memberInactiveRemark" rows="3" maxlength="500" placeholder="Explain why this member is being set as inactive (e.g. resigned, deceased, suspended)."></textarea>
+                  <small class="text-muted">Required when the account is inactive. Staff can see this remark in the member list.</small>
                 </div>
               </div>
               </div>
@@ -1365,6 +1494,17 @@
 
             <div id="memberDiscountSection_edit" class="member-form-section member-form-section--discount">
             {% include 'admin_panel/partials/member_concession_modal_fields.html' with suffix='_edit' expanded_discount_help=True %}
+            </div>
+
+            <div class="member-form-section">
+              <div class="member-form-section-title">Loan eligibility</div>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label" for="memberDateJoined">Registration date</label>
+                  <input type="datetime-local" class="form-control" id="memberDateJoined">
+                  <small class="text-muted">Exact registration date used to calculate when this member can request a loan.</small>
+                </div>
+              </div>
             </div>
 
             <div class="member-form-section">
@@ -1425,7 +1565,7 @@
           <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <p class="mb-2">Enter a 4-digit Admin/User PIN to proceed with editing this member.</p>
+          <p class="mb-2">Enter a 4-digit PIN that is already saved on a member account to proceed.</p>
           <div id="editPinAlert" class="alert alert-danger" style="display:none;"></div>
           <label for="editAuthorizerPinInput" class="form-label">4-digit PIN</label>
           <input
@@ -1438,7 +1578,7 @@
             placeholder="••••"
             autocomplete="off"
           >
-          <small class="text-muted">Numbers only, exactly 4 digits.</small>
+          <small class="text-muted">Must match a PIN stored in the database for an active member.</small>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -1468,11 +1608,18 @@
             <div class="mb-3">
               <label for="backupDate" class="form-label">Backup Date</label>
               <input type="date" class="form-control" id="backupDate" required>
-              <small class="text-muted">Select the date to use in the backup filename (defaults to today if not specified)</small>
+              <small class="text-muted">Include members created on or before this date. Defaults to today.</small>
+            </div>
+            <div class="mb-3">
+              <label for="backupFormat" class="form-label">File format</label>
+              <select class="form-select" id="backupFormat">
+                <option value="xlsx" selected>Excel (.xlsx)</option>
+                <option value="csv">CSV (.csv)</option>
+              </select>
             </div>
             <div class="alert alert-info mb-0">
               <i class="bi bi-info-circle me-2"></i>
-              <strong>Note:</strong> The backup will include all member data. The filename will include the selected date.
+              <strong>Note:</strong> The backup includes member profile fields, balance, share capital, and account status.
             </div>
           </form>
         </div>
@@ -1522,7 +1669,7 @@
                   <tr style="background:#f8fafc;">
                     <th class="ps-3 py-2 text-uppercase text-muted fw-semibold" style="font-size:.75rem;letter-spacing:.06em;width:22%;white-space:nowrap;">Field</th>
                     <th class="py-2 text-uppercase text-muted fw-semibold" style="font-size:.75rem;letter-spacing:.06em;">Current</th>
-                    <th class="py-2 pe-3 text-uppercase fw-semibold" style="font-size:.75rem;letter-spacing:.06em;color:#F58220;">Will Restore To</th>
+                    <th class="py-2 pe-3 text-uppercase fw-semibold" style="font-size:.75rem;letter-spacing:.06em;color:#ED1C24;">Will Restore To</th>
                   </tr>
                 </thead>
                 <tbody id="restoreLastEditDiffBody"></tbody>
@@ -1639,7 +1786,7 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  {% include "partials/bootstrap_scripts.html" %}
   <script>
     (function () {
       const collapseEl = document.getElementById('segmentStoreRulesCollapse');
@@ -1763,6 +1910,16 @@
         const activeHint = document.getElementById(activeHintId);
         if (activeHint) activeHint.style.display = isMember ? '' : 'none';
         if (!isMember) global.resetConcessionFormUI(suffix);
+        global.syncMemberBalanceVisibility(role);
+      };
+      global.syncMemberBalanceVisibility = function (role) {
+        const isCommittee = (role || '') === 'committee';
+        const addWrap = document.getElementById('adminAddBalanceWrap');
+        const editWrap = document.getElementById('memberBalanceWrap');
+        if (addWrap) addWrap.style.display = isCommittee ? 'none' : '';
+        if (editWrap) editWrap.style.display = isCommittee ? 'none' : '';
+        const addInput = document.getElementById('adminAddBalance');
+        if (isCommittee && addInput) addInput.value = '0.00';
       };
     })(window);
 
@@ -1803,6 +1960,72 @@
       return s;
     };
 
+    window.MEMBER_COMPLETE_DETAIL_FIELDS = [
+      'middle_name', 'barangay', 'municipality', 'province', 'date_of_birth', 'gender', 'tin', 'age',
+      'civil_status', 'religion', 'educational_attainment', 'occupation', 'coop_type', 'area',
+      'membership_status', 'location', 'rsbsa_remarks', 'rsbsa_number', 'income_sources', 'annual_income',
+      'other_assets', 'spouse_name', 'spouse_occupation', 'date_of_pmes', 'resolution_number',
+      'date_accepted', 'or_number', 'initial_capital_paid_up', 'date_of_mf_recog', 'mf_center'
+    ];
+
+    window.memberCompleteDetailFieldId = function (prefix, field) {
+      const camel = field.split('_').map(function (part, i) {
+        if (i === 0) return part.charAt(0).toUpperCase() + part.slice(1);
+        return part.charAt(0).toUpperCase() + part.slice(1);
+      }).join('');
+      return prefix + camel;
+    };
+
+    window.collectMemberCompleteDetails = function (prefix) {
+      const out = {};
+      (window.MEMBER_COMPLETE_DETAIL_FIELDS || []).forEach(function (field) {
+        const el = document.getElementById(window.memberCompleteDetailFieldId(prefix, field));
+        out[field] = el ? String(el.value || '').trim() : '';
+      });
+      return out;
+    };
+
+    window.fillMemberCompleteDetails = function (prefix, data) {
+      const src = data || {};
+      (window.MEMBER_COMPLETE_DETAIL_FIELDS || []).forEach(function (field) {
+        const el = document.getElementById(window.memberCompleteDetailFieldId(prefix, field));
+        if (!el) return;
+        const val = src[field];
+        el.value = (val === undefined || val === null) ? '' : String(val);
+      });
+    };
+
+    window.computeAgeFromDob = function (dobStr) {
+      if (!dobStr) return '';
+      const parts = String(dobStr).split('-');
+      if (parts.length < 3) return '';
+      const born = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+      if (Number.isNaN(born.getTime())) return '';
+      const today = new Date();
+      let age = today.getFullYear() - born.getFullYear();
+      const m = today.getMonth() - born.getMonth();
+      if (m < 0 || (m === 0 && today.getDate() < born.getDate())) age -= 1;
+      return age >= 0 ? String(age) : '';
+    };
+
+    document.querySelectorAll('.member-dob-input').forEach(function (dobEl) {
+      dobEl.addEventListener('change', function () {
+        const ageId = dobEl.getAttribute('data-age-target');
+        const ageEl = ageId ? document.getElementById(ageId) : null;
+        if (!ageEl) return;
+        const computed = window.computeAgeFromDob(dobEl.value);
+        if (computed !== '') ageEl.value = computed;
+      });
+    });
+
+    function toDatetimeLocalValue(value) {
+      const dt = value instanceof Date ? value : new Date(value || Date.now());
+      if (Number.isNaN(dt.getTime())) return '';
+      const pad = n => String(n).padStart(2, '0');
+      return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate()) +
+        'T' + pad(dt.getHours()) + ':' + pad(dt.getMinutes());
+    }
+
     // ── Add Member (mirrors /admin/members/member/add/ fieldsets) ───────────────
     (function() {
       const addMemberAdminModalEl = document.getElementById('addMemberAdminModal');
@@ -1817,11 +2040,15 @@
       const adminAddPhone         = document.getElementById('adminAddPhone');
       const adminAddRole          = document.getElementById('adminAddRole');
       const adminAddBalance       = document.getElementById('adminAddBalance');
+      const adminAddShareCapital  = document.getElementById('adminAddShareCapital');
       const adminAddIsActive      = document.getElementById('adminAddIsActive');
+      const adminAddInactiveRemark = document.getElementById('adminAddInactiveRemark');
+      const adminAddInactiveRemarkWrap = document.getElementById('adminAddInactiveRemarkWrap');
       const adminAddPin           = document.getElementById('adminAddPin');
       const adminAddTogglePinBtn  = document.getElementById('adminAddTogglePinBtn');
       const adminAddTogglePinIcon = document.getElementById('adminAddTogglePinIcon');
       const adminAddIsPinLocked   = document.getElementById('adminAddIsPinLocked');
+      const adminAddDateJoined    = document.getElementById('adminAddDateJoined');
 
       function getCsrf() {
         const el = document.querySelector('[name=csrfmiddlewaretoken]');
@@ -1872,6 +2099,16 @@
       if (adminAddFirstName) adminAddFirstName.addEventListener('input', autoFillUsername);
       if (adminAddLastName)  adminAddLastName.addEventListener('input', autoFillUsername);
 
+      function syncAddInactiveRemark() {
+        const inactive = adminAddIsActive && !adminAddIsActive.checked;
+        if (adminAddInactiveRemarkWrap) {
+          adminAddInactiveRemarkWrap.style.display = inactive ? '' : 'none';
+        }
+      }
+      if (adminAddIsActive) {
+        adminAddIsActive.addEventListener('change', syncAddInactiveRemark);
+      }
+
       if (adminAddTogglePinBtn && adminAddPin) {
         adminAddTogglePinBtn.addEventListener('click', function() {
           const hide = adminAddPin.type === 'password';
@@ -1888,9 +2125,11 @@
           setUsernameSpinner(false);
           hideAddAlert();
           if (adminAddBalance) adminAddBalance.value = '0.00';
+          if (adminAddShareCapital) adminAddShareCapital.value = '0.00';
           if (adminAddPin) adminAddPin.type = 'password';
           if (adminAddTogglePinIcon) adminAddTogglePinIcon.className = 'bi bi-eye';
           resetConcessionFormUI('_add');
+          if (adminAddDateJoined) adminAddDateJoined.value = toDatetimeLocalValue(new Date());
           if (adminAddRole && typeof window.syncMemberDiscountSectionVisibility === 'function') {
             window.syncMemberDiscountSectionVisibility('_add', adminAddRole.value);
           }
@@ -1898,6 +2137,7 @@
             adminAddSaveBtn.disabled = false;
             adminAddSaveBtn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save member';
           }
+          syncAddInactiveRemark();
         });
       }
 
@@ -1944,6 +2184,14 @@
           return;
         }
 
+        const isActive = adminAddIsActive ? adminAddIsActive.checked : true;
+        const inactiveRemark = (adminAddInactiveRemark ? adminAddInactiveRemark.value : '').trim();
+        if (!isActive && !inactiveRemark) {
+          showAddAlert('Please enter a remark explaining why this member is inactive.', 'warning');
+          if (adminAddInactiveRemark) adminAddInactiveRemark.focus();
+          return;
+        }
+
         adminAddSaveBtn.disabled = true;
         adminAddSaveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
 
@@ -1957,11 +2205,17 @@
             email: adminAddEmail ? adminAddEmail.value.trim() : '',
             phone: adminAddPhone ? adminAddPhone.value.trim() : '',
             role: adminAddRole ? adminAddRole.value : 'member',
-            balance: adminAddBalance ? (adminAddBalance.value || '0.00') : '0.00',
+            balance: (adminAddRole && adminAddRole.value === 'committee')
+              ? '0.00'
+              : (adminAddBalance ? (adminAddBalance.value || '0.00') : '0.00'),
+            share_capital: adminAddShareCapital ? (adminAddShareCapital.value || '0.00') : '0.00',
             pin_attempts: 0,
-            is_active: adminAddIsActive ? adminAddIsActive.checked : true,
+            is_active: isActive,
+            inactive_remark: isActive ? '' : inactiveRemark,
             is_pin_locked: adminAddIsPinLocked ? adminAddIsPinLocked.checked : false,
+            date_joined: adminAddDateJoined ? adminAddDateJoined.value : '',
           };
+          Object.assign(payload, window.collectMemberCompleteDetails('adminAdd'));
 
           Object.assign(payload, window.buildConcessionPayloadForRole('_add', payload.role));
           if (pin) {
@@ -2175,13 +2429,17 @@
       const memberPhone = document.getElementById('memberPhone');
       const memberRole = document.getElementById('memberRole');
       const memberBalance = document.getElementById('memberBalance');
+      const memberShareCapital = document.getElementById('memberShareCapital');
       const memberIsActive = document.getElementById('memberIsActive');
+      const memberInactiveRemark = document.getElementById('memberInactiveRemark');
+      const memberInactiveRemarkWrap = document.getElementById('memberInactiveRemarkWrap');
       const memberOldPin = document.getElementById('memberOldPin');
       const memberNewPin = document.getElementById('memberNewPin');
       const togglePinVisibilityBtn = document.getElementById('togglePinVisibilityBtn');
       const togglePinIcon = document.getElementById('togglePinIcon');
       const memberPinAttempts = document.getElementById('memberPinAttempts');
       const memberIsPinLocked = document.getElementById('memberIsPinLocked');
+      const memberDateJoined = document.getElementById('memberDateJoined');
       const addMemberBtn = document.getElementById('addMemberBtn');
       const addMemberBtnToolbar = document.getElementById('addMemberBtnToolbar');
       const editPinModal = document.getElementById('editPinModal');
@@ -2190,6 +2448,16 @@
       const confirmEditPinBtn = document.getElementById('confirmEditPinBtn');
       let editAuthorizerPin = '';
       let pendingEditData = null;
+
+      function syncEditInactiveRemark() {
+        const inactive = memberIsActive && !memberIsActive.checked;
+        if (memberInactiveRemarkWrap) {
+          memberInactiveRemarkWrap.style.display = inactive ? '' : 'none';
+        }
+      }
+      if (memberIsActive) {
+        memberIsActive.addEventListener('change', syncEditInactiveRemark);
+      }
 
       // Toggle PIN visibility
       if (togglePinVisibilityBtn && memberOldPin && togglePinIcon) {
@@ -2271,6 +2539,7 @@
         memberLastName.value  = data.last_name  || '';
         memberEmail.value     = data.email      || '';
         memberPhone.value     = data.phone      || '';
+        window.fillMemberCompleteDetails('member', data);
 
         // Role & account
         {% if restrict_member_role %}
@@ -2282,6 +2551,11 @@
         {% endif %}
 
         if (memberBalance) memberBalance.value = data.balance !== undefined ? data.balance : '0.00';
+        if (memberShareCapital) {
+          memberShareCapital.value = data.share_capital !== undefined && data.share_capital !== ''
+            ? data.share_capital
+            : '0.00';
+        }
 
         const memberCreditOutstanding = document.getElementById('memberCreditOutstanding');
         const memberCreditAvailable = document.getElementById('memberCreditAvailable');
@@ -2314,6 +2588,10 @@
         memberIsActive.checked = data.is_active !== undefined
           ? (data.is_active === true || data.is_active === 'True' || data.is_active === 'true' || data.is_active === '1')
           : true;
+        if (memberInactiveRemark) {
+          memberInactiveRemark.value = data.inactive_remark || '';
+        }
+        syncEditInactiveRemark();
 
         // Security
         if (memberOldPin) {
@@ -2327,6 +2605,11 @@
         if (togglePinIcon) togglePinIcon.className = 'bi bi-eye';
         if (memberPinAttempts) memberPinAttempts.value = data.pin_attempts !== undefined ? data.pin_attempts : '0';
         if (memberIsPinLocked) memberIsPinLocked.checked = (data.is_pin_locked === true || data.is_pin_locked === 'True' || data.is_pin_locked === 'true');
+        if (memberDateJoined) {
+          memberDateJoined.value = data.date_joined
+            ? toDatetimeLocalValue(data.date_joined)
+            : toDatetimeLocalValue(new Date());
+        }
 
         if (typeof window.setConcessionFormUI === 'function') {
           window.setConcessionFormUI('_edit', data);
@@ -2355,22 +2638,58 @@
         });
       }
 
+      function showEditPinError(message) {
+        if (editPinAlert) {
+          editPinAlert.className = 'alert alert-danger';
+          editPinAlert.textContent = message;
+          editPinAlert.style.display = 'block';
+        }
+      }
+
       if (confirmEditPinBtn) {
         confirmEditPinBtn.addEventListener('click', function() {
           const cleanPin = (editPinInput ? editPinInput.value : '').trim();
           if (!/^\d{4}$/.test(cleanPin)) {
-            if (editPinAlert) {
-              editPinAlert.className = 'alert alert-danger';
-              editPinAlert.textContent = 'A valid 4-digit PIN is required.';
-              editPinAlert.style.display = 'block';
-            }
+            showEditPinError('A valid 4-digit PIN is required.');
             return;
           }
-          editAuthorizerPin = cleanPin;
-          bootstrap.Modal.getOrCreateInstance(editPinModal).hide();
-          if (pendingEditData) {
-            openMemberModal('edit', pendingEditData);
-          }
+
+          confirmEditPinBtn.disabled = true;
+          const originalLabel = confirmEditPinBtn.innerHTML;
+          confirmEditPinBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Verifying...';
+
+          fetch('/api/members/verify-edit-pin/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': csrftoken
+            },
+            body: JSON.stringify({ pin: cleanPin })
+          })
+          .then(res => res.json())
+          .then(data => {
+            if (data.success) {
+              editAuthorizerPin = cleanPin;
+              bootstrap.Modal.getOrCreateInstance(editPinModal).hide();
+              if (pendingEditData) {
+                openMemberModal('edit', pendingEditData);
+              }
+            } else {
+              editAuthorizerPin = '';
+              showEditPinError(data.error || 'Invalid PIN. Enter a 4-digit PIN that is saved on a member account.');
+              if (editPinInput) {
+                editPinInput.value = '';
+                editPinInput.focus();
+              }
+            }
+          })
+          .catch(() => {
+            showEditPinError('Server error while verifying PIN. Please try again.');
+          })
+          .finally(() => {
+            confirmEditPinBtn.disabled = false;
+            confirmEditPinBtn.innerHTML = originalLabel;
+          });
         });
       }
 
@@ -2412,6 +2731,14 @@
           return;
         }
 
+        const isActive = memberIsActive ? memberIsActive.checked : true;
+        const inactiveRemark = (memberInactiveRemark ? memberInactiveRemark.value : '').trim();
+        if (!isActive && !inactiveRemark) {
+          showInlineAlert(memberFormAlert, 'Please enter a remark explaining why this member is inactive.', 'warning');
+          if (memberInactiveRemark) memberInactiveRemark.focus();
+          return;
+        }
+
         const payload = {
           first_name:    firstName,
           last_name:     lastName,
@@ -2420,10 +2747,17 @@
           email:         memberEmail         ? memberEmail.value.trim()      : '',
           phone:         memberPhone         ? memberPhone.value.trim()      : '',
           role:          memberRole          ? memberRole.value              : 'member',
-          is_active:     memberIsActive      ? memberIsActive.checked        : true,
+          share_capital: memberShareCapital  ? (memberShareCapital.value || '0.00') : '0.00',
+          is_active:     isActive,
+          inactive_remark: isActive ? '' : inactiveRemark,
           pin_attempts:  memberPinAttempts   ? parseInt(memberPinAttempts.value, 10) || 0 : 0,
           is_pin_locked: memberIsPinLocked   ? memberIsPinLocked.checked     : false,
         };
+        Object.assign(payload, window.collectMemberCompleteDetails('member'));
+
+        if (memberDateJoined && memberDateJoined.value) {
+          payload.date_joined = memberDateJoined.value;
+        }
 
         if (oldPin) payload.old_pin = oldPin;
         if (newPin) payload.new_pin = newPin;
@@ -2493,7 +2827,15 @@
 
       document.querySelectorAll('.edit-member-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          requestEditAuthorization({
+          const detailsMapEl = document.getElementById('member-complete-details-map');
+          let details = {};
+          try {
+            const map = detailsMapEl ? JSON.parse(detailsMapEl.textContent || '{}') : {};
+            details = map[String(btn.dataset.id)] || {};
+          } catch (e) {
+            details = {};
+          }
+          requestEditAuthorization(Object.assign({
             id:             btn.dataset.id,
             username:       btn.dataset.username       || '',
             rfid:           window.sanitizeRfidValue(btn.dataset.rfid),
@@ -2503,18 +2845,21 @@
             phone:          btn.dataset.phone          || '',
             role:           btn.dataset.role           || 'member',
             balance:        btn.dataset.balance        || '0.00',
+            share_capital:  btn.dataset.shareCapital   || '0.00',
             credit_outstanding: btn.dataset.creditOutstanding || '0',
             credit_available: btn.dataset.creditAvailable || '',
             is_active:      btn.dataset.active,
+            inactive_remark: btn.dataset.inactiveRemark || '',
             pin_attempts:   btn.dataset.pinAttempts    || '0',
             is_pin_locked:  btn.dataset.isPinLocked    || 'False',
+            date_joined:    btn.dataset.dateJoined     || '',
             senior_active:  btn.getAttribute('data-senior-active') || 'false',
             senior_osca:    btn.getAttribute('data-senior-osca') || '',
             senior_notes:   btn.getAttribute('data-senior-notes') || '',
             pwd_active:     btn.getAttribute('data-pwd-active') || 'false',
             pwd_id:         btn.getAttribute('data-pwd-id') || '',
             pwd_notes:      btn.getAttribute('data-pwd-notes') || '',
-          });
+          }, details));
         });
       });
 
@@ -2956,12 +3301,23 @@
 
       function getPayCreditSelectedTotal() {
         let total = 0;
+        const salesWithSelectedItems = new Set();
         payCreditSalesData.forEach(function (s) {
           (s.items || []).forEach(function (item) {
             if (payCreditSelectedItemIds.has(item.id)) {
               total += parseFloat(item.line_amount) || 0;
+              salesWithSelectedItems.add(s.id);
             }
           });
+        });
+        // Include sale interest when any of its products are selected
+        payCreditSalesData.forEach(function (s) {
+          const interest = parseFloat(s.interest_amount) || 0;
+          if (interest <= 0) return;
+          const itemIds = getSaleItemIds(s);
+          if (!itemIds.length || salesWithSelectedItems.has(s.id)) {
+            total += interest;
+          }
         });
         return total;
       }
@@ -3026,7 +3382,13 @@
         salesList.innerHTML = payCreditSalesData.map(function (s) {
           const receiptUrl = escapeHtml(s.receipt_url || '#');
           const saleTotal = parseFloat(s.total_amount) || 0;
+          const interestAmt = parseFloat(s.interest_amount) || 0;
           const headerSelected = false;
+          const interestHtml = interestAmt > 0
+            ? '<div class="pay-credit-item-row d-flex justify-content-between align-items-center text-muted" style="cursor:default;opacity:0.95;">' +
+              '<span class="small"><i class="bi bi-percent me-1"></i>Interest (paid first)</span>' +
+              '<span class="fw-semibold ms-2" style="color:#7c3aed;">₱' + interestAmt.toFixed(2) + '</span></div>'
+            : '';
           const itemsHtml = (s.items || []).map(function (item) {
             return '<button type="button" class="pay-credit-item-row d-flex justify-content-between align-items-center" ' +
               'data-item-id="' + escapeHtml(String(item.id)) + '" data-transaction-id="' + escapeHtml(String(s.id)) + '">' +
@@ -3036,7 +3398,7 @@
               ' <span class="pay-credit-item-qty">x' + escapeHtml(String(item.quantity)) + '</span></span></span>' +
               '<span class="fw-semibold ms-2" style="color:#5b21b6;">₱' + parseFloat(item.line_amount).toFixed(2) + '</span>' +
               '</button>';
-          }).join('');
+          }).join('') + interestHtml;
 
           return '<div class="pay-credit-sale-block">' +
             '<button type="button" class="pay-credit-sale-header d-flex justify-content-between align-items-center small' +
@@ -3044,7 +3406,11 @@
             '<span class="d-flex align-items-center gap-2 flex-grow-1 min-width-0">' +
             '<span class="pay-credit-sale-check"><i class="bi bi-check-circle-fill"></i></span>' +
             '<span class="min-width-0"><strong>' + escapeHtml(s.transaction_number) + '</strong><br>' +
-            '<span class="text-muted">' + escapeHtml(s.created_at) + '</span></span></span>' +
+            '<span class="text-muted">' + escapeHtml(s.created_at) +
+            (typeof s.days_unpaid === 'number'
+              ? ' · <span style="color:#5b21b6;">unpaid ' + s.days_unpaid + ' day' + (s.days_unpaid === 1 ? '' : 's') + '</span>'
+              : '') +
+            '</span></span></span>' +
             '<span class="d-flex align-items-center gap-1 ms-2">' +
             '<span class="fw-bold" style="color:#5b21b6;">₱' + saleTotal.toFixed(2) + '</span>' +
             '<a href="' + receiptUrl + '" class="btn btn-sm pay-credit-sale-receipt-btn" target="_blank" rel="noopener" ' +
@@ -3142,6 +3508,19 @@
             renderPayCreditSalesList(data.sales || []);
             if (outEl && data.credit_outstanding) {
               outEl.textContent = '₱' + parseFloat(data.credit_outstanding).toFixed(2);
+            }
+            const interestWrap = document.getElementById('payCreditInterestWrap');
+            const principalEl = document.getElementById('payCreditPrincipal');
+            const interestEl = document.getElementById('payCreditInterest');
+            const interestAmt = parseFloat(data.credit_interest || 0) || 0;
+            if (interestWrap && principalEl && interestEl) {
+              if (interestAmt > 0 || data.credit_interest_enabled) {
+                principalEl.textContent = '₱' + (parseFloat(data.credit_principal || 0) || 0).toFixed(2);
+                interestEl.textContent = '₱' + interestAmt.toFixed(2);
+                interestWrap.style.display = '';
+              } else {
+                interestWrap.style.display = 'none';
+              }
             }
           })
           .catch(function (err) {
@@ -3272,44 +3651,57 @@
     (function() {
       const backupDataModal = document.getElementById('backupDataModal');
       const backupDateInput = document.getElementById('backupDate');
+      const backupFormatInput = document.getElementById('backupFormat');
       const downloadBackupBtn = document.getElementById('downloadBackupBtn');
       const backupDataBtn = document.getElementById('backupDataBtn');
-      
-      // Handle backup data button click - close dropdown and open modal
+
+      function openBackupModal() {
+        if (!backupDataModal || typeof bootstrap === 'undefined') return;
+        // Closing the Actions dropdown first avoids Bootstrap's dropdown+modal conflict.
+        const dropdownEl = document.getElementById('actionsDropdown');
+        const dropdown = dropdownEl ? bootstrap.Dropdown.getInstance(dropdownEl) : null;
+        if (dropdown) dropdown.hide();
+        const modal = bootstrap.Modal.getOrCreateInstance(backupDataModal);
+        modal.show();
+      }
+
       if (backupDataBtn) {
-        backupDataBtn.addEventListener('click', (e) => {
+        backupDataBtn.addEventListener('click', function (e) {
           e.preventDefault();
-          // Close the dropdown menu if it's open
-          const dropdown = bootstrap.Dropdown.getInstance(document.getElementById('actionsDropdown'));
-          if (dropdown) {
-            dropdown.hide();
-          }
-          // Let Bootstrap handle modal opening via data-bs-toggle
+          e.stopPropagation();
+          openBackupModal();
         });
       }
 
-      // Set default date to today when modal opens
       if (backupDataModal && backupDateInput) {
-        backupDataModal.addEventListener('show.bs.modal', () => {
+        backupDataModal.addEventListener('show.bs.modal', function () {
           const today = new Date().toISOString().split('T')[0];
-          backupDateInput.value = today;
+          if (!backupDateInput.value) backupDateInput.value = today;
         });
+      }
 
-        // Handle download button click
-        if (downloadBackupBtn) {
-          downloadBackupBtn.addEventListener('click', () => {
-            const selectedDate = backupDateInput.value;
-            if (selectedDate) {
-              const backupUrl = '{% url "backup_members_data" %}?date=' + selectedDate;
-              window.location.href = backupUrl;
-              // Close modal after starting download
-              const modal = bootstrap.Modal.getInstance(backupDataModal);
-              if (modal) {
-                modal.hide();
-              }
-            }
-          });
-        }
+      if (downloadBackupBtn) {
+        downloadBackupBtn.addEventListener('click', function () {
+          const selectedDate = backupDateInput ? backupDateInput.value : '';
+          if (!selectedDate) {
+            if (backupDateInput) backupDateInput.focus();
+            return;
+          }
+          const format = backupFormatInput ? (backupFormatInput.value || 'xlsx') : 'xlsx';
+          const backupUrl = '{% url "backup_members_data" %}?date=' + encodeURIComponent(selectedDate) +
+            '&format=' + encodeURIComponent(format);
+          // Prefer a temporary link so download works even when nested in modals.
+          const link = document.createElement('a');
+          link.href = backupUrl;
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          if (backupDataModal && typeof bootstrap !== 'undefined') {
+            const modal = bootstrap.Modal.getInstance(backupDataModal);
+            if (modal) modal.hide();
+          }
+        });
       }
     })();
 
@@ -3561,7 +3953,7 @@
       function fieldRow(label, current, previous) {
         const changed = current !== previous;
         const bgStyle = changed ? 'background:#fefce8;' : '';
-        const prevStyle = changed ? 'color:#F58220;font-weight:600;' : 'color:#64748b;';
+        const prevStyle = changed ? 'color:#ED1C24;font-weight:600;' : 'color:#64748b;';
         const changedIcon = changed ? '<i class="bi bi-arrow-right text-warning mx-1" style="font-size:.75rem;"></i>' : '';
         const currentStyle = changed ? 'text-decoration:line-through;color:#94a3b8;font-size:.8rem;' : 'color:#374151;';
         const emDash = '<span class="text-muted">—</span>';
@@ -3870,8 +4262,7 @@
     </div>
   </div>
 
-  {% include 'admin_panel/partials/admin_nav_support.html' %}
-  {% include 'admin_panel/partials/admin_nav_support_js.html' %}
+  {% include 'admin_panel/partials/admin_nav_footer.html' %}
 
   {% include 'admin_panel/partials/footer.html' %}
 

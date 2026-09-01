@@ -407,7 +407,7 @@ def save_transaction(
                     product_name=item_data["product_name"],
                     product_barcode=item_data["product_barcode"],
                     unit_price=Decimal(str(item_data["unit_price"])),
-                    quantity=int(item_data["quantity"]),
+                    quantity=Decimal(str(item_data["quantity"])),
                     total_price=Decimal(str(item_data["total_price"])),
                     vat_amount=Decimal(str(item_data.get("vat_amount", "0.00"))),
                     vatable_sale=Decimal(str(item_data.get("vatable_sale", "0.00"))),
@@ -607,7 +607,7 @@ def save_member(member_data: Dict, member_id: Optional[int] = None) -> DBResult:
     ALLOWED_FIELDS = {
         "first_name", "last_name", "email", "phone",
         "rfid_card_number", "member_type_id", "role",
-        "is_active", "balance", "username",
+        "is_active", "inactive_remark", "balance", "username",
     }
     clean_data = {k: v for k, v in member_data.items() if k in ALLOWED_FIELDS}
 

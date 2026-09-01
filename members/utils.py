@@ -61,17 +61,20 @@ def member_registered_discount_for_kiosk(member):
 def mask_rfid(rfid_card_number):
     """
     Mask RFID card number for security purposes.
-    Shows only first 3 digits followed by asterisks.
-    
+    Shows only the last 4 characters, prefixed with asterisks.
+
     Args:
         rfid_card_number: The RFID card number string
-        
+
     Returns:
-        Masked RFID string (e.g., '0008265033' -> '000****')
+        Masked RFID string (e.g., '0008265033' -> '******5033')
     """
     if not rfid_card_number:
         return 'N/A'
-    if len(rfid_card_number) <= 3:
-        return rfid_card_number
-    return rfid_card_number[:3] + '****'
+    value = str(rfid_card_number).strip()
+    if not value:
+        return 'N/A'
+    if len(value) <= 4:
+        return value
+    return '******' + value[-4:]
 

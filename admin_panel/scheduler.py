@@ -2,12 +2,15 @@
 Scheduler module for running periodic tasks.
 This module sets up APScheduler to run scheduled tasks when Django starts.
 """
+import functools
 import logging
 import sys
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from django.core.management import call_command
 from django.conf import settings
+from django.db import close_old_connections
+from django.db.utils import InterfaceError, OperationalError
 from django.utils import timezone
 from datetime import timedelta
 
@@ -17,6 +20,47 @@ logger = logging.getLogger(__name__)
 scheduler = None
 
 
+def _with_db_connection(func):
+    """
+    Ensure each APScheduler job uses a fresh DB connection.
+
+    Background threads keep connections that MySQL/Windows may close after
+    idle timeout ("MySQL server has gone away" / WinError 10053). Django's
+    request middleware does not run in these threads, so we close stale
+    connections before/after every job and retry once on connection errors.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        close_old_connections()
+        try:
+            return func(*args, **kwargs)
+        except (OperationalError, InterfaceError) as e:
+            logger.warning(
+                "Stale DB connection in %s (%s); retrying once...",
+                func.__name__,
+                e,
+            )
+            # Force-drop the dead socket so the next query opens a new one
+            from django.db import connections
+            for conn in connections.all():
+                conn.close()
+            try:
+                return func(*args, **kwargs)
+            except Exception as retry_err:
+                logger.error(
+                    "Error in scheduled job %s after retry: %s",
+                    func.__name__,
+                    retry_err,
+                    exc_info=True,
+                )
+                raise
+        finally:
+            close_old_connections()
+
+    return wrapper
+
+
+@_with_db_connection
 def send_daily_report():
     """Function to call the send_daily_report management command"""
     try:
@@ -27,12 +71,15 @@ def send_daily_report():
         today = timezone.now().date()
         call_command('send_daily_report', date=today.strftime('%Y-%m-%d'), force=True, verbosity=1)
         logger.info(f"Daily report sent successfully for {today}")
+    except (OperationalError, InterfaceError):
+        raise  # Let _with_db_connection retry with a fresh connection
     except Exception as e:
         logger.error(f"Error sending daily report: {str(e)}", exc_info=True)
         # Print to stderr for visibility
         print(f"Error sending daily report: {str(e)}", file=sys.stderr)
 
 
+@_with_db_connection
 def check_and_send_missed_report():
     """Check if yesterday's report was missed and send it if needed"""
     try:
@@ -46,20 +93,26 @@ def check_and_send_missed_report():
         if has_transactions:
             logger.info(f"Checking if report for {yesterday} was missed...")
             logger.info(f"Report check completed for {yesterday}")
+    except (OperationalError, InterfaceError):
+        raise
     except Exception as e:
         logger.error(f"Error checking missed report: {str(e)}", exc_info=True)
 
 
+@_with_db_connection
 def backup_database_weekly():
     """Create weekly backup of the active database (MySQL .sql or SQLite .sqlite3)."""
     try:
         logger.info('Starting scheduled weekly database backup...')
         call_command('backup_database_weekly', verbosity=1)
+    except (OperationalError, InterfaceError):
+        raise
     except Exception as e:
         logger.error(f'Error during weekly database backup: {str(e)}', exc_info=True)
         print(f'Error during weekly database backup: {str(e)}', file=sys.stderr)
 
 
+@_with_db_connection
 def expire_overdue_return_windows():
     """Automatically expire return windows whose deadline has passed without item return."""
     try:
@@ -82,8 +135,42 @@ def expire_overdue_return_windows():
             count += 1
         if count:
             logger.info(f"Auto-expired {count} overdue return window(s).")
+    except (OperationalError, InterfaceError):
+        raise  # Let _with_db_connection retry with a fresh connection
     except Exception as e:
         logger.error(f"Error expiring return windows: {str(e)}", exc_info=True)
+
+
+@_with_db_connection
+def accrue_credit_interest():
+    """Apply monthly interest on overdue credit (utang) after the grace period."""
+    try:
+        from helper.credit_interest_helper import ensure_credit_interest_up_to_date
+        newly = ensure_credit_interest_up_to_date()
+        if newly and newly > 0:
+            logger.info("Accrued ₱%s credit interest on overdue utang.", newly)
+    except (OperationalError, InterfaceError):
+        raise
+    except Exception as e:
+        logger.error(f"Error accruing credit interest: {str(e)}", exc_info=True)
+
+
+@_with_db_connection
+def accrue_savings_interest():
+    """Credit monthly Regular Savings interest ((balance × 5%) ÷ 12)."""
+    try:
+        from savings.services import accrue_due_savings_interest
+        credited, skipped = accrue_due_savings_interest()
+        if credited:
+            logger.info(
+                "Credited %s savings interest transaction(s) (%s skipped).",
+                credited,
+                skipped,
+            )
+    except (OperationalError, InterfaceError):
+        raise
+    except Exception as e:
+        logger.error(f"Error accruing savings interest: {str(e)}", exc_info=True)
 
 
 def start_scheduler():
@@ -155,6 +242,32 @@ def start_scheduler():
             coalesce=True,
         )
         logger.info("Scheduled: Auto-expire overdue return windows every hour.")
+
+        # Accrue monthly credit (utang) interest daily at 00:15
+        scheduler.add_job(
+            accrue_credit_interest,
+            trigger=CronTrigger(hour=0, minute=15),
+            id='accrue_credit_interest',
+            name='Accrue credit (utang) interest',
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+        logger.info("Scheduled: Accrue credit interest daily at 00:15.")
+
+        # Accrue monthly Regular Savings interest every hour (opening-anniversary dates).
+        scheduler.add_job(
+            accrue_savings_interest,
+            trigger=CronTrigger(minute=20),
+            id='accrue_savings_interest',
+            name='Accrue regular savings interest',
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+        logger.info("Scheduled: Accrue savings interest hourly at :20.")
 
         # Weekly database backup (Sunday 02:00 by default)
         weekly_enabled = getattr(

@@ -717,7 +717,7 @@ This report includes:
 - Recent transactions
 
 Best regards,
-Cooperative Kiosk System
+BAGNOS MPC
         """.strip()
         
         email = EmailMessage(

@@ -1,6 +1,7 @@
 import json
 import io
 import csv
+import os
 import re
 import secrets
 from collections import defaultdict
@@ -68,10 +69,19 @@ from inventory.utils import (
     is_giveaway_stock_transaction,
     parse_giveaway_stock_notes,
     request_can_manage_giveaways,
+    send_inventory_stock_alerts,
     serialize_giveaway_stock_transaction,
     set_product_giveaway,
 )
 from inventory.pricing import discounts_by_product_ids, unit_price_after_discounts, promote_new_stock_to_old_if_needed
+from inventory.units import (
+    UNIT_KILO,
+    UNIT_PIECE,
+    parse_sale_qty,
+    parse_stock_qty,
+    qty_json,
+    retail_unit_label,
+)
 from django.core.exceptions import ValidationError
 
 from members.models import (
@@ -79,6 +89,7 @@ from members.models import (
     MemberType,
     Role,
     BalanceTransaction,
+    ShareCapitalTransaction,
     DeletedMember,
     CardBalanceRefill,
     MemberEditHistory,
@@ -87,8 +98,8 @@ from members.models import (
     SegmentProductGroupDiscount,
 )
 from members.utils import mask_rfid
-from transactions.models import Transaction, TransactionItem, RefundReason, WalkInCustomer, CreditPayment
-from admin_panel.models import StoreProfile, KioskConfig
+from transactions.models import Transaction, TransactionItem, RefundReason, WalkInCustomer, CreditPayment, CreditPaymentLine
+from admin_panel.models import StoreProfile, KioskConfig, CreditSettings, WebsiteAuditLog
 from admin_panel.report_customers import (
     append_top_customers_pdf,
     get_top_customers_for_period,
@@ -124,6 +135,10 @@ from inventory_helper import StockManager
 from login_helper import (
     is_admin_user,
     is_cashier_or_admin,
+    is_committee_only_user,
+    is_loan_desk_user,
+    is_loan_officer_only_user,
+    is_loans_only_user,
     is_staff_role,
     restricts_member_role_to_member_only,
     can_access_django_admin,
@@ -216,7 +231,13 @@ def _list_price_qty_sold_subtotal(
         sold_qs = sold_qs.filter(transaction__created_at__lt=range_end_aware)
 
     sold_rows = list(
-        sold_qs.values('product_id').annotate(qty_sold=Coalesce(Sum('quantity'), 0))
+        sold_qs.values('product_id').annotate(
+            qty_sold=Coalesce(
+                Sum('quantity'),
+                _zero_qty(),
+                output_field=DecimalField(max_digits=14, decimal_places=3),
+            )
+        )
     )
     product_id_list = [row['product_id'] for row in sold_rows if row['product_id']]
     if not product_id_list:
@@ -227,11 +248,11 @@ def _list_price_qty_sold_subtotal(
     )
     total = Decimal('0.00')
     for sold in sold_rows:
-        qty = max(int(sold['qty_sold'] or 0), 0)
+        qty = max(_as_qty(sold['qty_sold']), Decimal('0'))
         if qty <= 0:
             continue
         unit_price = Decimal(price_map.get(sold['product_id']) or 0)
-        total += Decimal(qty) * unit_price
+        total += qty * unit_price
     return total.quantize(Decimal('0.01'))
 
 
@@ -256,7 +277,10 @@ def _list_price_qty_sold_series(range_start_aware, range_end_aware, current_tz, 
 
     series = defaultdict(float)
     for row in items:
-        qty = max(int(row['quantity'] or 0), 0)
+        try:
+            qty = float(row['quantity'] or 0)
+        except (TypeError, ValueError):
+            qty = 0
         if qty <= 0:
             continue
         unit_price = float(price_map.get(row['product_id']) or 0)
@@ -349,9 +373,14 @@ def _dashboard_refund_events_qs():
     )
 
 
-def _dashboard_recent_refunds(limit=10):
-    """Latest refund batches from DB line items (members, walk-ins, and guests)."""
-    rows = list(_dashboard_refund_events_qs()[:limit])
+def _dashboard_recent_refunds(range_start_aware, range_end_aware, current_tz, limit=10):
+    """Latest refund batches in the selected chart period (members, walk-ins, guests)."""
+    rows = list(
+        _dashboard_refund_events_qs().filter(
+            refunded_at__gte=range_start_aware,
+            refunded_at__lt=range_end_aware,
+        )[:limit]
+    )
     if not rows:
         return []
 
@@ -371,10 +400,10 @@ def _dashboard_recent_refunds(limit=10):
         recent_refunds.append({
             'transaction_number': txn.transaction_number,
             'member_name': txn.customer_display_name,
-            'refunded_at': row['refunded_at'],
-            'refund_amount': row['refund_amount'],
+            'refunded_at': timezone.localtime(row['refunded_at'], current_tz).strftime('%b %d, %Y %H:%M'),
+            'refund_amount': float(row['refund_amount'] or 0),
             'is_partially_refunded': is_partially_refunded,
-            'remaining_balance': txn.total_amount if is_partially_refunded else None,
+            'remaining_balance': float(txn.total_amount or 0) if is_partially_refunded else None,
         })
     return recent_refunds
 
@@ -411,7 +440,9 @@ def _dashboard_refund_stats(
         .aggregate(total=Coalesce(Sum('total_price'), Decimal('0.00')))['total'] or 0
     )
 
-    recent_refunds = _dashboard_recent_refunds(limit=10)
+    recent_refunds = _dashboard_recent_refunds(
+        range_start_aware, range_end_aware, current_tz, limit=10
+    )
 
     if range_granularity == 'monthly':
         refunds_in_range = period_events.values('refunded_at', 'refund_amount')
@@ -799,9 +830,11 @@ def _dashboard_operational_insights(period_completed_txns, period_refund_count, 
 def handle_login(request, redirect_to_dashboard=False):
     """Shared login logic — delegates to login_helper for all auth logic."""
     if request.user.is_authenticated:
+        if is_loans_only_user(request.user):
+            return redirect('loans_overview')
         return redirect('dashboard' if is_cashier_or_admin(request.user) else 'user_choice')
 
-    # Honour an existing member-only session
+    # Honour an existing member-only session — always show user-choice hub
     if is_member_session_valid(request):
         return redirect('user_choice')
 
@@ -863,6 +896,10 @@ def admin_role_badge_context(request):
         role_badge = 'admin_verified'
     elif member and member.is_active and member.role == 'cashier':
         role_badge = 'cashier'
+    elif member and member.is_active and member.role == 'committee':
+        role_badge = 'committee'
+    elif member and member.is_active and member.role == 'loan_officer':
+        role_badge = 'loan_officer'
     elif (member and member.is_active and member.role == 'staff') or (
         user.is_staff and not user.is_superuser
     ):
@@ -876,7 +913,165 @@ def admin_role_badge_context(request):
 
 
 @login_required
+def loans_overview(request):
+    """Loan desk landing page: view all loans members have acquired, plus pipeline shortcuts.
+
+    The primary feature is a searchable/filterable table of every LoanApplication
+    (member, product, amount, status, outstanding balance). Pipeline step cards
+    remain as secondary shortcuts into the 13-step workflow.
+    """
+    if not is_loan_desk_user(request.user):
+        messages.warning(request, 'You do not have permission to access loan management.')
+        return redirect('kiosk_home')
+
+    from django.urls import reverse
+    from loans.models import LoanApplication, Disbursement
+
+    inquiry_url = reverse('loans:inquiry-create')
+    apply_url = reverse('loans:application-create')
+    list_url = reverse('loans:application-list')
+
+    Status = LoanApplication.Status
+    # "Acquired" = funds released / repayment in progress / settled.
+    ACQUIRED_STATUSES = (
+        Status.DISBURSED,
+        Status.ACTIVE,
+        Status.FULLY_PAID,
+        Status.CLOSED,
+    )
+
+    search_query = (request.GET.get('search') or '').strip()
+    status_filter = (request.GET.get('status') or 'acquired').strip().lower()
+    valid_status_keys = {s.value.lower() for s in Status} | {'all', 'acquired'}
+    if status_filter not in valid_status_keys:
+        status_filter = 'acquired'
+
+    loans_qs = (
+        LoanApplication.objects
+        .select_related('member', 'loan_product', 'disbursement', 'payment_option')
+        .prefetch_related('amortization_schedules')
+        .order_by('-created_at')
+    )
+
+    if status_filter == 'acquired':
+        loans_qs = loans_qs.filter(status__in=ACQUIRED_STATUSES)
+    elif status_filter != 'all':
+        loans_qs = loans_qs.filter(status=status_filter.upper())
+
+    if search_query:
+        loans_qs = loans_qs.filter(
+            Q(member__username__icontains=search_query)
+            | Q(member__first_name__icontains=search_query)
+            | Q(member__last_name__icontains=search_query)
+            | Q(member__email__icontains=search_query)
+            | Q(loan_product__name__icontains=search_query)
+            | Q(purpose__icontains=search_query)
+        )
+
+    loans_page = Paginator(loans_qs, 25).get_page(request.GET.get('page') or 1)
+
+    # Attach outstanding balance without N+1 inside the template.
+    loans_with_balance = []
+    for loan in loans_page.object_list:
+        loan.outstanding_balance = loan.total_outstanding_balance()
+        loans_with_balance.append(loan)
+
+    all_loans = LoanApplication.objects.all()
+    total_loans = all_loans.count()
+    acquired_count = all_loans.filter(status__in=ACQUIRED_STATUSES).count()
+    active_count = all_loans.filter(status=Status.ACTIVE).count()
+    pending_count = all_loans.exclude(
+        status__in=ACQUIRED_STATUSES + (Status.REJECTED, Status.VERIFICATION_FAILED, Status.DRAFT)
+    ).count()
+    total_disbursed = (
+        Disbursement.objects.aggregate(total=Sum('amount_released')).get('total')
+        or Decimal('0')
+    )
+    # Outstanding across ACTIVE acquired loans only.
+    outstanding_total = Decimal('0')
+    for loan in all_loans.filter(status=Status.ACTIVE).prefetch_related('amortization_schedules'):
+        outstanding_total += loan.total_outstanding_balance()
+
+    steps = [
+        {'n': 1, 'title': 'Loan Inquiry', 'icon': 'bi-question-circle',
+         'desc': 'Log a member inquiry and match them to a suitable loan product.',
+         'url': inquiry_url, 'action': 'Start inquiry'},
+        {'n': 2, 'title': 'Loan Application & Documents', 'icon': 'bi-file-earmark-text',
+         'desc': 'Capture the application details and upload required documents.',
+         'url': apply_url, 'action': 'New application'},
+        {'n': 3, 'title': 'Eligibility & Document Verification', 'icon': 'bi-patch-check',
+         'desc': 'Staff confirm membership standing and document completeness.',
+         'url': list_url, 'action': 'Verify'},
+        {'n': 4, 'title': 'Credit Investigation & Evaluation', 'icon': 'bi-search',
+         'desc': 'Credit officer scores repayment capacity and recommends a decision.',
+         'url': list_url, 'action': 'Investigate'},
+        {'n': 5, 'title': 'Credit Committee Approval', 'icon': 'bi-people',
+         'desc': 'The committee reviews the evaluation and records a decision.',
+         'url': list_url, 'action': 'Review'},
+        {'n': 6, 'title': 'Approval Decision', 'icon': 'bi-check2-circle',
+         'desc': 'Approve or reject — the member is emailed the decision automatically.',
+         'url': list_url, 'action': 'Decide'},
+        {'n': 7, 'title': 'Insurance Enrollment', 'icon': 'bi-shield-check',
+         'desc': 'Enroll credit-life insurance when the product requires it.',
+         'url': list_url, 'action': 'Enroll'},
+        {'n': 8, 'title': 'Documentation & Signing', 'icon': 'bi-pen',
+         'desc': 'Generate and sign the loan agreement with the borrower.',
+         'url': list_url, 'action': 'Sign documents'},
+        {'n': 9, 'title': 'Loan Disbursement', 'icon': 'bi-cash-stack',
+         'desc': 'Cashier releases funds and records the disbursement reference.',
+         'url': list_url, 'action': 'Disburse'},
+        {'n': 10, 'title': 'Payment Collection & Monitoring', 'icon': 'bi-wallet2',
+         'desc': 'Record repayments and monitor the loan while it is active.',
+         'url': list_url, 'action': 'Collect payment'},
+        {'n': 11, 'title': 'Loan Fully Paid?', 'icon': 'bi-cash-coin',
+         'desc': 'Once every installment is settled the loan is marked fully paid.',
+         'url': list_url, 'action': 'View status'},
+        {'n': 12, 'title': 'Settlement & Account Closure', 'icon': 'bi-file-earmark-check',
+         'desc': 'Issue the clearance certificate, release collateral and close the account.',
+         'url': list_url, 'action': 'Close account'},
+    ]
+
+    status_choices = [
+        ('acquired', 'Acquired loans'),
+        ('all', 'All applications'),
+        ('active', 'Active'),
+        ('disbursed', 'Disbursed'),
+        ('fully_paid', 'Fully paid'),
+        ('closed', 'Closed'),
+        ('pending_committee_approval', 'Pending committee'),
+        ('submitted', 'Submitted'),
+        ('under_verification', 'Under verification'),
+        ('under_investigation', 'Under investigation'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+        ('draft', 'Draft'),
+    ]
+
+    context = {
+        'steps': steps,
+        'loans_list_url': list_url,
+        'apply_url': apply_url,
+        'loans': loans_with_balance,
+        'page_obj': loans_page,
+        'search_query': search_query,
+        'status_filter': status_filter,
+        'status_choices': status_choices,
+        'total_loans': total_loans,
+        'acquired_count': acquired_count,
+        'active_count': active_count,
+        'pending_count': pending_count,
+        'total_disbursed': total_disbursed,
+        'outstanding_total': outstanding_total,
+        **admin_role_badge_context(request),
+    }
+    return render(request, 'admin_panel/loans_overview.html', context)
+
+
+@login_required
 def dashboard(request):
+    # Loan-only roles land on loans; other staff use the full console.
+    if is_loans_only_user(request.user):
+        return redirect('loans_overview')
     # Ensure only admin/cashier users can access dashboard
     if not is_cashier_or_admin(request.user):
         messages.warning(request, 'You do not have permission to access the admin dashboard.')
@@ -1444,6 +1639,7 @@ def api_dashboard_period_data(request):
         'all_time_refund_amount': all_time_refund_amount,
         'period_refunds': period_refunds,
         'period_refund_amount': period_refund_amount,
+        'recent_refunds': refund_stats['recent_refunds'],
         'recent_transactions': recent_transactions,
         'daily_sales_labels': daily_labels,
         'daily_sales_totals': daily_totals,
@@ -1556,6 +1752,19 @@ def inventory_management(request):
     return render(request, 'admin_panel/inventory.html', context)
 
 
+@login_required
+@require_http_methods(["POST"])
+def api_send_inventory_stock_alerts(request):
+    """Email current low-stock and out-of-stock products to staff and admin roles."""
+    if not is_cashier_or_admin(request.user):
+        return JsonResponse({'success': False, 'error': 'Permission denied'}, status=403)
+
+    result = send_inventory_stock_alerts()
+    status = 200 if result.get('success') else 400
+    payload = {k: v for k, v in result.items() if k != 'recipients'}
+    return JsonResponse(payload, status=status)
+
+
 def _money_expr(qty_field, price_field):
     return ExpressionWrapper(
         F(qty_field) * F(price_field),
@@ -1565,6 +1774,18 @@ def _money_expr(qty_field, price_field):
 
 def _zero_money():
     return Value(Decimal('0.00'), output_field=DecimalField(max_digits=18, decimal_places=2))
+
+
+def _zero_qty():
+    """Coalesce default for Decimal stock / sale quantities (pieces or kg)."""
+    return Value(Decimal('0'), output_field=DecimalField(max_digits=14, decimal_places=3))
+
+
+def _as_qty(value):
+    try:
+        return Decimal(str(value or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal('0')
 
 
 def _compute_inventory_price_summary(product_qs):
@@ -1587,11 +1808,12 @@ def _compute_inventory_price_summary(product_qs):
         return empty
 
     money_field = DecimalField(max_digits=18, decimal_places=2)
+    qty_field = DecimalField(max_digits=14, decimal_places=3)
     batch_totals = ProductStockBatch.objects.filter(
         product_id__in=product_ids,
         quantity__gt=0,
     ).aggregate(
-        total_units=Coalesce(Sum('quantity'), 0),
+        total_units=Coalesce(Sum('quantity'), _zero_qty(), output_field=qty_field),
         total_buying=Coalesce(
             Sum(_money_expr('quantity', 'cost')),
             _zero_money(),
@@ -1607,7 +1829,7 @@ def _compute_inventory_price_summary(product_qs):
     )
     leftover_qs = product_qs.exclude(id__in=batched_ids).filter(stock_quantity__gt=0)
     leftover_totals = leftover_qs.aggregate(
-        total_units=Coalesce(Sum('stock_quantity'), 0),
+        total_units=Coalesce(Sum('stock_quantity'), _zero_qty(), output_field=qty_field),
         total_buying=Coalesce(
             Sum(_money_expr('stock_quantity', 'cost')),
             _zero_money(),
@@ -1615,34 +1837,34 @@ def _compute_inventory_price_summary(product_qs):
         ),
     )
 
-    total_units = int(batch_totals['total_units'] or 0) + int(leftover_totals['total_units'] or 0)
+    total_units = _as_qty(batch_totals['total_units']) + _as_qty(leftover_totals['total_units'])
     total_buying = (batch_totals['total_buying'] or Decimal('0.00')) + (
         leftover_totals['total_buying'] or Decimal('0.00')
     )
     total_buying = Decimal(total_buying).quantize(Decimal('0.01'))
 
     # Selling value of current stock (same unit counts as buying)
-    units_by_product = defaultdict(int)
+    units_by_product = defaultdict(lambda: Decimal('0'))
     for row in ProductStockBatch.objects.filter(
         product_id__in=product_ids,
         quantity__gt=0,
     ).values('product_id', 'quantity'):
-        units_by_product[row['product_id']] += int(row['quantity'] or 0)
+        units_by_product[row['product_id']] += _as_qty(row['quantity'])
     for row in leftover_qs.values('id', 'stock_quantity'):
-        units_by_product[row['id']] = int(row['stock_quantity'] or 0)
+        units_by_product[row['id']] = _as_qty(row['stock_quantity'])
 
     price_map = dict(product_qs.values_list('id', 'price'))
     total_selling = Decimal('0.00')
     for pid, units in units_by_product.items():
-        total_selling += Decimal(units) * Decimal(price_map.get(pid) or 0)
+        total_selling += units * Decimal(price_map.get(pid) or 0)
     total_selling = total_selling.quantize(Decimal('0.01'))
 
     sold_by_price = _qty_sold_by_price(product_ids)
     sold_map = {
-        pid: sum(t['qty_sold'] for t in tiers)
+        pid: sum((_as_qty(t['qty_sold']) for t in tiers), Decimal('0'))
         for pid, tiers in sold_by_price.items()
     }
-    total_qty_sold = sum(sold_map.values())
+    total_qty_sold = sum(sold_map.values(), Decimal('0'))
     history_original_map = _original_qty_from_history(product_ids)
     total_subtotal = Decimal('0.00')
     for product in product_qs.prefetch_related('stock_batches'):
@@ -1708,25 +1930,25 @@ def _product_inventory_value_row(product):
     Selling value and REVENUE PER ITEM (subtotal) are filled later from qty sold.
     ``stock`` is current units on hand (stock left).
     """
-    units = 0
+    units = Decimal('0')
     buy_value = Decimal('0.00')
     old_batch = product.old_stock_batch
     new_batch = product.new_stock_batch
     if old_batch and old_batch.quantity > 0:
-        qty = int(old_batch.quantity)
+        qty = Decimal(str(old_batch.quantity))
         units += qty
-        buy_value += Decimal(qty) * Decimal(old_batch.cost or 0)
+        buy_value += qty * Decimal(old_batch.cost or 0)
     if new_batch and new_batch.quantity > 0:
-        qty = int(new_batch.quantity)
+        qty = Decimal(str(new_batch.quantity))
         units += qty
-        buy_value += Decimal(qty) * Decimal(new_batch.cost or 0)
+        buy_value += qty * Decimal(new_batch.cost or 0)
 
     buying_price = Decimal(product.cost or 0).quantize(Decimal('0.01'))
     selling_price = Decimal(product.price or 0).quantize(Decimal('0.01'))
 
     if units <= 0 and (product.stock_quantity or 0) > 0:
-        units = int(product.stock_quantity)
-        buy_value = (Decimal(units) * buying_price).quantize(Decimal('0.01'))
+        units = Decimal(str(product.stock_quantity))
+        buy_value = (units * buying_price).quantize(Decimal('0.01'))
     else:
         buy_value = buy_value.quantize(Decimal('0.01'))
 
@@ -1739,7 +1961,7 @@ def _product_inventory_value_row(product):
     if not product.is_active:
         status = f'{status} / Inactive'
 
-    sell_value = (Decimal(units) * selling_price).quantize(Decimal('0.01'))
+    sell_value = (units * selling_price).quantize(Decimal('0.01'))
 
     return {
         'name': product.name or '',
@@ -1778,9 +2000,9 @@ def _original_qty_from_history(product_ids):
         if entry.product_id in result:
             continue
         if entry.change_type == ProductStockHistory.CHANGE_CREATED:
-            result[entry.product_id] = int(entry.total_after or 0)
+            result[entry.product_id] = entry.total_after or 0
         else:
-            result[entry.product_id] = int(entry.total_before or 0)
+            result[entry.product_id] = entry.total_before or 0
     return result
 
 
@@ -1799,17 +2021,23 @@ def _qty_sold_by_price(product_ids):
             refunded_at__isnull=True,
         )
         .values('product_id', 'unit_price')
-        .annotate(qty_sold=Coalesce(Sum('quantity'), 0))
+        .annotate(
+            qty_sold=Coalesce(
+                Sum('quantity'),
+                _zero_qty(),
+                output_field=DecimalField(max_digits=14, decimal_places=3),
+            )
+        )
         .order_by('product_id', 'unit_price')
     ):
-        qty = max(int(row['qty_sold'] or 0), 0)
+        qty = max(_as_qty(row['qty_sold']), Decimal('0'))
         if qty <= 0:
             continue
         price = Decimal(row['unit_price'] or 0).quantize(Decimal('0.01'))
         tiers_by_product[row['product_id']].append({
             'unit_price': price,
             'qty_sold': qty,
-            'sell_value': (price * Decimal(qty)).quantize(Decimal('0.01')),
+            'sell_value': (price * qty).quantize(Decimal('0.01')),
         })
     return dict(tiers_by_product)
 
@@ -2142,9 +2370,9 @@ def export_inventory_price_report(request):
         bottomMargin=28,
     )
     styles = getSampleStyleSheet()
-    pdf_primary = colors.HexColor('#F58220')
-    pdf_primary_dark = colors.HexColor('#00A651')
-    pdf_row_alt = colors.HexColor('#ecfdf3')
+    pdf_primary = colors.HexColor('#ED1C24')
+    pdf_primary_dark = colors.HexColor('#C4121A')
+    pdf_row_alt = colors.HexColor('#FEF7D5')
     title_style = ParagraphStyle(
         'InvPriceTitle',
         parent=styles['Heading1'],
@@ -2600,11 +2828,11 @@ def _purchase_history_pdf_response(rows, *, title, scope_label, user_label, file
         bottomMargin=24,
     )
     styles = getSampleStyleSheet()
-    pdf_primary = colors.HexColor('#F58220')
-    pdf_primary_dark = colors.HexColor('#00A651')
+    pdf_primary = colors.HexColor('#ED1C24')
+    pdf_primary_dark = colors.HexColor('#C4121A')
     pdf_sale = colors.HexColor('#b45309')
-    pdf_row_alt = colors.HexColor('#ecfdf3')
-    pdf_sale_alt = colors.HexColor('#fff7ed')
+    pdf_row_alt = colors.HexColor('#FEF7D5')
+    pdf_sale_alt = colors.HexColor('#FEF7D5')
     title_style = ParagraphStyle(
         'PurchaseHistTitle',
         parent=styles['Heading1'],
@@ -3458,8 +3686,8 @@ def export_inventory_manual_discount_report(request):
 
     from xml.sax.saxutils import escape as xml_escape
 
-    pdf_primary = colors.HexColor('#F58220')
-    pdf_primary_dark = colors.HexColor('#00A651')
+    pdf_primary = colors.HexColor('#ED1C24')
+    pdf_primary_dark = colors.HexColor('#C4121A')
     pdf_heading = colors.HexColor('#166534')
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
@@ -3538,7 +3766,7 @@ def export_inventory_manual_discount_report(request):
                 ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('FONTSIZE', (0, 1), (-1, -1), 8),
                 ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#ecfdf3')]),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#FEF7D5')]),
             ]
         )
     )
@@ -3715,16 +3943,20 @@ def _save_product_sale_unit(unit, *, product, sale_mode, unit_label, barcode, pr
     return True, None
 
 
-def _sync_product_sale_units(product, *, piece_barcode, piece_price, is_active, sale_units_config):
+def _sync_product_sale_units(product, *, piece_barcode, piece_price, is_active, sale_units_config, unit_type=UNIT_PIECE):
     """
-    Keep retail (piece) and optional wholesale sale units in sync with dashboard forms.
+    Keep retail (piece/kg) and optional wholesale sale units in sync with dashboard forms.
     Returns (success, error_message).
     """
     if sale_units_config is None:
         return True, None
 
+    if unit_type == UNIT_KILO:
+        sale_units_config = {**(sale_units_config or {}), 'wholesale_enabled': False}
+
     wholesale_enabled = bool(sale_units_config.get('wholesale_enabled'))
     wholesale = sale_units_config.get('wholesale') or {}
+    retail_label = retail_unit_label(unit_type)
 
     retail_unit = (
         product.sale_units.filter(sale_mode=ProductSaleUnit.SALE_MODE_RETAIL)
@@ -3744,7 +3976,7 @@ def _sync_product_sale_units(product, *, piece_barcode, piece_price, is_active, 
             retail_unit,
             product=product,
             sale_mode=ProductSaleUnit.SALE_MODE_RETAIL,
-            unit_label='Piece',
+            unit_label=retail_label,
             barcode=piece_barcode,
             price=piece_price,
             units_per_package=1,
@@ -3757,7 +3989,7 @@ def _sync_product_sale_units(product, *, piece_barcode, piece_price, is_active, 
             None,
             product=product,
             sale_mode=ProductSaleUnit.SALE_MODE_RETAIL,
-            unit_label='Piece',
+            unit_label=retail_label,
             barcode=piece_barcode,
             price=piece_price,
             units_per_package=1,
@@ -3846,10 +4078,8 @@ def _sync_product_sale_units(product, *, piece_barcode, piece_price, is_active, 
     return True, None
 
 
-def _parse_stock_batch_int(value, default=0):
-    if value is None or value == '':
-        return default
-    return int(value)
+def _parse_stock_batch_qty(value, unit_type, default=0):
+    return parse_stock_qty(value, unit_type, default=default)
 
 
 def _parse_stock_batch_decimal(value):
@@ -3862,10 +4092,10 @@ def _stock_batch_payload(product):
     old_batch = product.old_stock_batch
     new_batch = product.new_stock_batch
     return {
-        'old_stock_quantity': old_batch.quantity if old_batch else 0,
+        'old_stock_quantity': qty_json(old_batch.quantity) if old_batch else 0,
         'old_stock_price': str(old_batch.unit_price) if old_batch else '',
         'old_stock_cost': str(old_batch.cost) if old_batch else '',
-        'new_stock_quantity': new_batch.quantity if new_batch else 0,
+        'new_stock_quantity': qty_json(new_batch.quantity) if new_batch else 0,
         'new_stock_price': str(new_batch.unit_price) if new_batch else '',
         'new_stock_cost': str(new_batch.cost) if new_batch else '',
     }
@@ -3897,8 +4127,8 @@ def _apply_product_stock_batches(product, get, *, default_price=None, default_co
     if not has_batch_input:
         return None
 
-    old_qty = _parse_stock_batch_int(get('old_stock_quantity'), 0)
-    new_qty = _parse_stock_batch_int(get('new_stock_quantity'), 0)
+    old_qty = _parse_stock_batch_qty(get('old_stock_quantity'), product.unit_type, 0)
+    new_qty = _parse_stock_batch_qty(get('new_stock_quantity'), product.unit_type, 0)
     old_selling = _parse_stock_batch_decimal(get('old_stock_price'))
     old_buying = _parse_stock_batch_decimal(get('old_stock_cost'))
     new_selling = _parse_stock_batch_decimal(get('new_stock_price'))
@@ -4022,6 +4252,10 @@ def api_create_product(request):
     if sale_units_config is None:
         return JsonResponse({'success': False, 'error': 'Invalid sale units data'}, status=400)
 
+    unit_type = (get('unit_type') or UNIT_PIECE).strip().lower()
+    if unit_type not in (UNIT_PIECE, UNIT_KILO):
+        return JsonResponse({'success': False, 'error': 'Invalid unit type. Choose piece or kilogram.'}, status=400)
+
     try:
         price = Decimal(str(get('price', '0')))
         cost = Decimal(str(get('cost', '0'))) if get('cost') else Decimal('0.00')
@@ -4029,10 +4263,10 @@ def api_create_product(request):
         return JsonResponse({'success': False, 'error': 'Invalid price or cost value'}, status=400)
 
     try:
-        stock_quantity = int(get('stock_quantity', 0))
-        low_stock_threshold = int(get('low_stock_threshold', 10))
-    except (TypeError, ValueError):
-        return JsonResponse({'success': False, 'error': 'Stock quantities must be whole numbers'}, status=400)
+        stock_quantity = parse_stock_qty(get('stock_quantity', 0), unit_type, default=0)
+        low_stock_threshold = parse_stock_qty(get('low_stock_threshold', 10), unit_type, default=10)
+    except ValueError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
     discount_group_code = (get('discount_group') or '').strip()
     valid_codes = frozenset(ProductDiscountGroup.objects.values_list('code', flat=True))
@@ -4056,6 +4290,7 @@ def api_create_product(request):
         category=category,
         price=price,
         cost=cost,
+        unit_type=unit_type,
         stock_quantity=stock_quantity,
         low_stock_threshold=low_stock_threshold,
         is_active=is_active,
@@ -4066,7 +4301,11 @@ def api_create_product(request):
     product.save()
     set_product_giveaway(product)
 
-    batch_total = _apply_product_stock_batches(product, get, default_price=price, default_cost=cost)
+    try:
+        batch_total = _apply_product_stock_batches(product, get, default_price=price, default_cost=cost)
+    except ValueError as exc:
+        product.delete()
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
     if batch_total is not None and batch_total != product.stock_quantity:
         product.stock_quantity = batch_total
         product.save(update_fields=['stock_quantity', 'updated_at'])
@@ -4086,6 +4325,7 @@ def api_create_product(request):
         piece_price=product.price,
         is_active=is_active,
         sale_units_config=sale_units_config,
+        unit_type=unit_type,
     )
     if not units_ok:
         product.delete()
@@ -4100,7 +4340,8 @@ def api_create_product(request):
             'barcode': product.barcode,
             'price': str(product.price),
             'cost': str(product.cost),
-            'stock_quantity': product.stock_quantity,
+            'unit_type': product.unit_type,
+            'stock_quantity': qty_json(product.stock_quantity),
             'category': product.category.name if product.category else None,
             'is_active': product.is_active,
             'is_giveaway': product.is_giveaway,
@@ -4204,6 +4445,11 @@ def api_update_product(request):
         if sale_units_config is None:
             return JsonResponse({'success': False, 'error': 'Invalid sale units data'}, status=400)
 
+    unit_type = (get('unit_type') or product.unit_type or UNIT_PIECE)
+    unit_type = str(unit_type).strip().lower()
+    if unit_type not in (UNIT_PIECE, UNIT_KILO):
+        return JsonResponse({'success': False, 'error': 'Invalid unit type. Choose piece or kilogram.'}, status=400)
+
     try:
         price = Decimal(str(get('price', '0')))
         cost = Decimal(str(get('cost', '0'))) if get('cost') else Decimal('0.00')
@@ -4211,10 +4457,10 @@ def api_update_product(request):
         return JsonResponse({'success': False, 'error': 'Invalid price or cost value'}, status=400)
 
     try:
-        stock_quantity = int(get('stock_quantity', 0))
-        low_stock_threshold = int(get('low_stock_threshold', 10))
-    except (TypeError, ValueError):
-        return JsonResponse({'success': False, 'error': 'Stock quantities must be whole numbers'}, status=400)
+        stock_quantity = parse_stock_qty(get('stock_quantity', 0), unit_type, default=0)
+        low_stock_threshold = parse_stock_qty(get('low_stock_threshold', 10), unit_type, default=10)
+    except ValueError as exc:
+        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
 
     discount_group_obj = None
     if get('discount_group') is not None:
@@ -4242,6 +4488,7 @@ def api_update_product(request):
             product.category = category
             product.price = price
             product.cost = cost
+            product.unit_type = unit_type
             product.low_stock_threshold = low_stock_threshold
             product.is_active = is_active
             if get('discount_group') is not None:
@@ -4267,6 +4514,7 @@ def api_update_product(request):
                     piece_price=product.price,
                     is_active=is_active,
                     sale_units_config=sale_units_config,
+                    unit_type=unit_type,
                 )
                 if not units_ok:
                     raise ValueError(units_err or 'Could not save sale units')
@@ -4292,7 +4540,8 @@ def api_update_product(request):
             'barcode': product.barcode,
             'price': str(product.price),
             'cost': str(product.cost),
-            'stock_quantity': product.stock_quantity,
+            'unit_type': product.unit_type,
+            'stock_quantity': qty_json(product.stock_quantity),
             'category': product.category.name if product.category else None,
             'is_active': product.is_active,
             'is_giveaway': product.is_giveaway,
@@ -4300,6 +4549,66 @@ def api_update_product(request):
             **_stock_batch_payload(product),
             **_sale_units_payload(product),
         }
+    })
+
+
+@login_required
+@require_http_methods(["POST"])
+def api_delete_product(request):
+    """Permanently delete a product. Admin role only; written to the audit trail."""
+    if not is_admin_user(request.user):
+        return JsonResponse({'success': False, 'error': 'Permission denied'}, status=403)
+
+    try:
+        data = json.loads(request.body.decode('utf-8'))
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON payload'}, status=400)
+
+    product_id = data.get('id')
+    if not product_id:
+        return JsonResponse({'success': False, 'error': 'Product ID is required'}, status=400)
+
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Product not found'}, status=404)
+
+    product_name = product.name
+    product_barcode = product.barcode or ''
+    product_pk = product.pk
+    stock_qty = str(product.stock_quantity)
+
+    try:
+        with db_transaction.atomic():
+            product.delete()
+    except Exception:
+        return JsonResponse({
+            'success': False,
+            'error': 'Could not delete this product. It may still be linked to other records.',
+        }, status=400)
+
+    try:
+        from admin_panel.audit import mark_audit_recorded, record_audit
+        record_audit(
+            WebsiteAuditLog.Action.INVENTORY,
+            actor=request.user,
+            description=f'Deleted product "{product_name}" (barcode {product_barcode})',
+            request=request,
+            object_type='Product',
+            object_id=product_pk,
+            metadata={
+                'name': product_name,
+                'barcode': product_barcode,
+                'stock_quantity': stock_qty,
+            },
+        )
+        mark_audit_recorded(request)
+    except Exception:
+        pass
+
+    return JsonResponse({
+        'success': True,
+        'message': f'Product "{product_name}" deleted successfully.',
     })
 
 
@@ -4376,14 +4685,14 @@ def api_product_stock_history(request, product_id):
             'id': entry.id,
             'change_type': entry.change_type,
             'change_type_display': entry.get_change_type_display(),
-            'old_stock_before': entry.old_stock_before,
-            'old_stock_after': entry.old_stock_after,
-            'new_stock_before': entry.new_stock_before,
-            'new_stock_after': entry.new_stock_after,
-            'total_before': entry.total_before,
-            'total_after': entry.total_after,
-            'total_change': entry.total_change,
-            'quantity_sold': entry.quantity_sold,
+            'old_stock_before': qty_json(entry.old_stock_before),
+            'old_stock_after': qty_json(entry.old_stock_after),
+            'new_stock_before': qty_json(entry.new_stock_before),
+            'new_stock_after': qty_json(entry.new_stock_after),
+            'total_before': qty_json(entry.total_before),
+            'total_after': qty_json(entry.total_after),
+            'total_change': qty_json(entry.total_change),
+            'quantity_sold': qty_json(entry.quantity_sold),
             'unit_price_before': _money_str(entry.unit_price_before),
             'unit_price': _money_str(entry.unit_price),
             'cost_before': _money_str(entry.cost_before),
@@ -4404,13 +4713,14 @@ def api_product_stock_history(request, product_id):
             'id': product.id,
             'name': product.name,
             'barcode': product.barcode or '',
+            'unit_type': product.unit_type,
         },
         'summary': {
-            'original_qty': original_qty,
-            'current_qty': product.stock_quantity,
-            'total_sold': sold_total,
-            'total_given_away': given_away_total,
-            'total_restocked': restocked_total,
+            'original_qty': qty_json(original_qty),
+            'current_qty': qty_json(product.stock_quantity),
+            'total_sold': qty_json(sold_total),
+            'total_given_away': qty_json(given_away_total),
+            'total_restocked': qty_json(restocked_total),
             'original_selling_price': _money_str(original_selling),
             'current_selling_price': _money_str(product.price),
             'original_buying_price': _money_str(original_buying),
@@ -4507,7 +4817,6 @@ def api_record_giveaway(request):
     for raw in items:
         try:
             product_id = int(raw.get('product_id'))
-            quantity = int(raw.get('quantity'))
         except (TypeError, ValueError):
             return JsonResponse({'success': False, 'error': 'Invalid product or quantity.'}, status=400)
         if product_id in seen_ids:
@@ -4516,14 +4825,12 @@ def api_record_giveaway(request):
                 status=400,
             )
         seen_ids.add(product_id)
-        if quantity <= 0:
-            return JsonResponse({'success': False, 'error': 'Quantity must be at least 1.'}, status=400)
-        parsed.append((product_id, quantity))
+        parsed.append((product_id, raw.get('quantity')))
 
     results = []
     try:
         with db_transaction.atomic():
-            for product_id, quantity in parsed:
+            for product_id, quantity_raw in parsed:
                 try:
                     product = Product.objects.select_for_update().get(
                         pk=product_id,
@@ -4534,14 +4841,19 @@ def api_record_giveaway(request):
                         {'success': False, 'error': 'Product not found or is inactive.'},
                         status=400,
                     )
+                try:
+                    quantity = parse_sale_qty(quantity_raw, product)
+                except ValueError as exc:
+                    return JsonResponse({'success': False, 'error': str(exc)}, status=400)
                 if product.stock_quantity < quantity:
                     return JsonResponse(
                         {
                             'success': False,
-                            'error': (
-                                f'Not enough stock for "{product.name}". '
-                                f'Requested {quantity}, available {product.stock_quantity}.'
-                            ),
+                'error': (
+                    f'Not enough stock for "{product.name}". '
+                    f'Requested {format_product_qty(product, quantity)}, '
+                    f'available {format_product_qty(product, product.stock_quantity)}.'
+                ),
                         },
                         status=400,
                     )
@@ -4551,7 +4863,7 @@ def api_record_giveaway(request):
                 results.append({
                     'product_id': product.id,
                     'name': product.name,
-                    'quantity': quantity,
+                    'quantity': qty_json(quantity),
                     'stock_after': stock_result.stock_after,
                 })
     except Exception:
@@ -4992,8 +5304,12 @@ def api_create_member(request):
     last_name = (data.get('last_name') or '').strip()
     username = (data.get('username') or '').strip() or None
     from helper.members_helper import (
+        apply_member_complete_details,
+        extract_member_complete_details,
         generate_unique_member_username,
         normalize_rfid,
+        parse_member_date_joined,
+        resolve_inactive_remark,
         rfid_is_taken_by_other,
     )
 
@@ -5013,6 +5329,9 @@ def api_create_member(request):
         if role not in ['member']:
             return JsonResponse({'success': False, 'error': 'You can only create members with the "member" role'}, status=403)
         role = 'member'  # Force to member role
+
+    if (role or '').strip().lower() == 'committee':
+        balance_raw = '0.00'
 
     if not first_name or not last_name:
         return JsonResponse({'success': False, 'error': 'First and last name are required'}, status=400)
@@ -5034,12 +5353,29 @@ def api_create_member(request):
     if balance < 0:
         return JsonResponse({'success': False, 'error': 'Balance cannot be negative'}, status=400)
 
+    share_capital_raw = data.get('share_capital', '0.00')
+    try:
+        share_capital = Decimal(str(share_capital_raw or '0.00'))
+    except (InvalidOperation, TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': 'Invalid share capital value'}, status=400)
+    if share_capital < 0:
+        return JsonResponse({'success': False, 'error': 'Share capital cannot be negative'}, status=400)
+
     try:
         pin_attempts = int(pin_attempts_raw or 0)
     except (TypeError, ValueError):
         return JsonResponse({'success': False, 'error': 'Invalid PIN attempts value'}, status=400)
     if pin_attempts < 0:
         pin_attempts = 0
+
+    try:
+        date_joined = parse_member_date_joined(data.get('date_joined'))
+    except ValueError:
+        return JsonResponse({'success': False, 'error': 'Invalid registration date format'}, status=400)
+
+    detail_fields, detail_error = extract_member_complete_details(data)
+    if detail_error:
+        return JsonResponse({'success': False, 'error': detail_error}, status=400)
 
     member_type = None
     if member_type_id:
@@ -5048,7 +5384,11 @@ def api_create_member(request):
         except MemberType.DoesNotExist:
             return JsonResponse({'success': False, 'error': 'Selected member type does not exist'}, status=400)
 
-    member = Member.objects.create(
+    inactive_remark, remark_error = resolve_inactive_remark(is_active, data.get('inactive_remark'))
+    if remark_error:
+        return JsonResponse({'success': False, 'error': remark_error}, status=400)
+
+    member = Member(
         first_name=first_name,
         last_name=last_name,
         username=username,
@@ -5058,12 +5398,28 @@ def api_create_member(request):
         member_type=member_type,
         member_role=Role.resolve_slug(role),
         balance=balance,
+        share_capital=share_capital,
         pin_attempts=pin_attempts,
         is_pin_locked=is_pin_locked,
         is_active=is_active,
+        inactive_remark=inactive_remark,
+        date_joined=date_joined,
     )
+    apply_member_complete_details(member, detail_fields or {})
+    member.save()
     if pin:
         member.set_pin(pin)
+
+    if share_capital > 0:
+        ShareCapitalTransaction.objects.create(
+            member=member,
+            transaction_type='opening',
+            amount=share_capital,
+            balance_before=Decimal('0.00'),
+            balance_after=share_capital,
+            notes='Opening share capital on member registration',
+            performed_by=request.user if request.user.is_authenticated else None,
+        )
 
     concession_err = _apply_member_concession_from_request(member, data.get('concession'))
     if concession_err:
@@ -5102,6 +5458,8 @@ def api_create_member(request):
             # Link user to member
             member.user = user
             member.save()
+            from members.role_permissions import sync_member_loan_permissions
+            sync_member_loan_permissions(member)
         except Exception as e:
             member.delete()
             return JsonResponse({'success': False, 'error': f'Failed to create user account: {str(e)}'}, status=400)
@@ -5134,10 +5492,51 @@ def api_create_member(request):
             'role': member.role,
             'is_active': member.is_active,
             'balance': str(member.balance),
+            'share_capital': str(member.share_capital),
             'username': member.username or '',
             'pin_set': bool(member.pin_hash),
         }
     })
+
+
+def _member_edit_pin_error():
+    """User-facing error when an edit-authorisation PIN check fails."""
+    if not _member_edit_pin_available():
+        return (
+            'No member PIN is saved yet. Open a member, set a 4-digit PIN, '
+            'save it, then use that PIN to authorize edits.'
+        )
+    return 'Invalid PIN. Enter a 4-digit PIN that is saved on a member account.'
+
+
+@login_required
+@require_http_methods(["POST"])
+def api_verify_member_edit_pin(request):
+    """Verify an edit-authorisation PIN before the edit form is opened."""
+    if not is_cashier_or_admin(request.user):
+        return JsonResponse({'success': False, 'error': 'Permission denied'}, status=403)
+
+    try:
+        data = json.loads(request.body.decode('utf-8'))
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON payload'}, status=400)
+
+    pin = (data.get('pin') or '').strip()
+    if not re.fullmatch(r'\d{4}', pin):
+        return JsonResponse({
+            'success': False,
+            'error': 'A valid 4-digit PIN is required.',
+        }, status=400)
+
+    session_member = _get_active_member_for_refill_user(request.user)
+    authorising_member = _resolve_member_edit_pin_authorizer(pin, session_member)
+    if not authorising_member:
+        return JsonResponse({
+            'success': False,
+            'error': _member_edit_pin_error(),
+        }, status=403)
+
+    return JsonResponse({'success': True})
 
 
 @login_required
@@ -5168,16 +5567,27 @@ def api_update_member(request):
 
     authorizer_pin = (data.get('authorizer_pin') or '').strip()
     session_member = _get_active_member_for_refill_user(request.user)
-    authorising_member = None
-    if authorizer_pin:
-        authorising_member = _resolve_member_edit_pin_authorizer(authorizer_pin, session_member)
-        if not authorising_member:
-            return JsonResponse({
-                'success': False,
-                'error': 'Invalid PIN. Enter your own PIN or an Admin PIN to continue.',
-            }, status=403)
+    if not authorizer_pin:
+        return JsonResponse({
+            'success': False,
+            'error': 'A 4-digit PIN is required to edit a member.',
+        }, status=403)
+    authorising_member = _resolve_member_edit_pin_authorizer(authorizer_pin, session_member)
+    if not authorising_member:
+        return JsonResponse({
+            'success': False,
+            'error': _member_edit_pin_error(),
+        }, status=403)
 
-    from helper.members_helper import normalize_rfid, rfid_is_taken_by_other, rfids_equivalent
+    from helper.members_helper import (
+        apply_member_complete_details,
+        extract_member_complete_details,
+        normalize_rfid,
+        parse_member_date_joined,
+        resolve_inactive_remark,
+        rfid_is_taken_by_other,
+        rfids_equivalent,
+    )
 
     first_name = (data.get('first_name') or member.first_name).strip()
     last_name = (data.get('last_name') or member.last_name).strip()
@@ -5212,6 +5622,14 @@ def api_update_member(request):
     if email and Member.objects.filter(email=email).exclude(pk=member.pk).exists():
         return JsonResponse({'success': False, 'error': 'Email already exists'}, status=400)
 
+    inactive_remark, remark_error = resolve_inactive_remark(is_active, data.get('inactive_remark'))
+    if remark_error:
+        return JsonResponse({'success': False, 'error': remark_error}, status=400)
+
+    detail_fields, detail_error = extract_member_complete_details(data)
+    if detail_error:
+        return JsonResponse({'success': False, 'error': detail_error}, status=400)
+
     member_type_new = None
     update_member_type = 'member_type_id' in data
     if update_member_type:
@@ -5232,6 +5650,7 @@ def api_update_member(request):
         'phone': member.phone or '',
         'role': member.role or '',
         'is_active': bool(member.is_active),
+        'inactive_remark': member.inactive_remark or '',
     }
 
     # Save a snapshot of current values so the edit can be undone later.
@@ -5252,6 +5671,7 @@ def api_update_member(request):
     member.rfid_card_number = rfid
     member.email = email
     member.phone = phone
+    apply_member_complete_details(member, detail_fields or {})
     if update_member_type:
         member.member_type = member_type_new
     requested = (role or "").strip().lower()
@@ -5261,6 +5681,15 @@ def api_update_member(request):
         slug_to_apply = (member.role or "member")
     member.member_role = Role.resolve_slug(slug_to_apply)
     member.is_active = is_active
+    member.inactive_remark = inactive_remark
+
+    if 'date_joined' in data:
+        try:
+            member.date_joined = parse_member_date_joined(data.get('date_joined'), default_now=False)
+        except ValueError:
+            return JsonResponse({'success': False, 'error': 'Invalid registration date format'}, status=400)
+        if member.date_joined is None:
+            return JsonResponse({'success': False, 'error': 'Registration date is required'}, status=400)
 
     # Update username (Member.username CharField) directly
     username_raw = data.get('username')
@@ -5297,6 +5726,20 @@ def api_update_member(request):
                 return JsonResponse({'success': False, 'error': 'Old PIN is incorrect'}, status=403)
         member.set_pin(new_pin)
 
+    share_capital_changed = False
+    share_capital_before = member.share_capital or Decimal('0.00')
+    share_capital_after = share_capital_before
+    if 'share_capital' in data:
+        try:
+            share_capital_after = Decimal(str(data.get('share_capital') or '0.00'))
+        except (InvalidOperation, TypeError, ValueError):
+            return JsonResponse({'success': False, 'error': 'Invalid share capital value'}, status=400)
+        if share_capital_after < 0:
+            return JsonResponse({'success': False, 'error': 'Share capital cannot be negative'}, status=400)
+        if share_capital_after != share_capital_before:
+            member.share_capital = share_capital_after
+            share_capital_changed = True
+
     changed_labels = []
     if old_values['username'] != (member.username or ''):
         changed_labels.append('Username')
@@ -5312,11 +5755,30 @@ def api_update_member(request):
         changed_labels.append('Role')
     if old_values['is_active'] != bool(member.is_active):
         changed_labels.append('Account Status')
+    if old_values['inactive_remark'] != (member.inactive_remark or ''):
+        changed_labels.append('Inactive Remark')
     if new_pin:
         changed_labels.append('PIN')
+    if share_capital_changed:
+        changed_labels.append('Share Capital')
 
     # Save all member changes (except PIN, already persisted via member.set_pin)
     member.save()
+
+    if share_capital_changed:
+        delta = share_capital_after - share_capital_before
+        ShareCapitalTransaction.objects.create(
+            member=member,
+            transaction_type='adjustment',
+            amount=abs(delta),
+            balance_before=share_capital_before,
+            balance_after=share_capital_after,
+            notes=(
+                f'Share capital adjusted from ₱{share_capital_before} to ₱{share_capital_after} '
+                'via Edit Member'
+            ),
+            performed_by=request.user if request.user.is_authenticated else None,
+        )
 
     concession_err = _apply_member_concession_from_request(member, data.get('concession'))
     if concession_err:
@@ -5331,17 +5793,22 @@ def api_update_member(request):
         actor_name = request.user.get_full_name().strip() or request.user.username
         actor_role = getattr(authorising_member, 'role', 'unknown').capitalize()
         timestamp_str = timezone.localtime(timezone.now()).strftime('%B %d, %Y %I:%M %p')
+        inactive_reason_block = ''
+        if not member.is_active and (member.inactive_remark or '').strip():
+            inactive_reason_block = (
+                f"\nReason for inactive status:\n  {member.inactive_remark.strip()}\n"
+            )
 
         def send_member_update_email():
             try:
                 subject = 'Your Account Details Were Updated'
                 body = f"""Hi {member.first_name},
 
-Your account details were updated in Gen-Glow.
+Your account details were updated in BAGNOS MPC.
 
 Updated fields:
 {changed_text}
-
+{inactive_reason_block}
 Updated by:
   - User: {actor_name}
   - Role: {actor_role}
@@ -5376,7 +5843,9 @@ If you did not request or authorize this change, please contact admin immediatel
             'member_type': member.member_type.name if member.member_type else '',
             'role': member.role,
             'is_active': member.is_active,
+            'inactive_remark': member.inactive_remark or '',
             'balance': str(member.balance),
+            'share_capital': str(member.share_capital),
         }
     })
 
@@ -5652,8 +6121,14 @@ def member_management(request):
         sort_filter = 'az'
 
     kiosk_config = KioskConfig.get()
-    member_max_credit = Decimal(str(kiosk_config.member_max_credit or 0))
+    from kiosk_helper import get_member_max_credit_limit
+    from helper.credit_interest_helper import ensure_credit_interest_up_to_date
+
+    member_max_credit = get_member_max_credit_limit()
     credit_limit_enabled = member_max_credit > 0
+    # Accrue any due monthly interest so dashboard totals stay current
+    ensure_credit_interest_up_to_date()
+    credit_settings = CreditSettings.get()
 
     # List members like Django admin: default shows everyone; optional active/inactive filters.
     members = Member.objects.select_related(
@@ -5702,6 +6177,9 @@ def member_management(request):
             Q(rfid_card_number__icontains=search_query) |
             Q(email__icontains=search_query) |
             Q(phone__icontains=search_query) |
+            Q(middle_name__icontains=search_query) |
+            Q(rsbsa_number__icontains=search_query) |
+            Q(tin__icontains=search_query) |
             Q(member_type__name__icontains=search_query) |
             Q(member_role__slug__icontains=search_query) |
             Q(member_role__name__icontains=search_query)
@@ -5725,16 +6203,17 @@ def member_management(request):
                     (Q(first_name__icontains=first_part) & Q(last_name__icontains=remaining_parts)) |
                     (Q(first_name__icontains=remaining_parts) & Q(last_name__icontains=first_part)) |
                     Q(first_name__icontains=search_query) |
+                    Q(middle_name__icontains=search_query) |
                     Q(last_name__icontains=search_query)
                 )
                 search_filters |= name_filter
             else:
                 # Single word, search in both name fields
-                search_filters |= Q(first_name__icontains=name_parts[0]) | Q(last_name__icontains=name_parts[0])
+                search_filters |= Q(first_name__icontains=name_parts[0]) | Q(middle_name__icontains=name_parts[0]) | Q(last_name__icontains=name_parts[0])
         else:
             # No spaces - single word search in first_name, last_name, or full name
             # Search individual fields
-            search_filters |= Q(first_name__icontains=search_query) | Q(last_name__icontains=search_query)
+            search_filters |= Q(first_name__icontains=search_query) | Q(middle_name__icontains=search_query) | Q(last_name__icontains=search_query)
             
             # Also try to match full name by checking if query matches start of first_name + last_name
             # This handles cases where user types "JohnDoe" (no space)
@@ -5750,6 +6229,11 @@ def member_management(request):
     members_per_page = 20
     members_paginator = Paginator(members, members_per_page)
     members_page = members_paginator.get_page(request.GET.get('page') or 1)
+    members_elided_pages = list(
+        members_paginator.get_elided_page_range(
+            members_page.number, on_each_side=2, on_ends=1
+        )
+    )
     members_list_params = request.GET.copy()
     members_list_params.pop('page', None)
     members_list_query = members_list_params.urlencode()
@@ -5783,13 +6267,26 @@ def member_management(request):
         credit_item_qs = credit_item_qs.filter(
             transaction__member__member_role__slug='member',
         )
-    total_credit_outstanding = credit_item_qs.aggregate(t=Sum('total_price'))['t'] or Decimal('0')
+    total_principal = credit_item_qs.aggregate(t=Sum('outstanding'))['t'] or Decimal('0')
+    from helper.credit_settlement_helper import _interest_outstanding_expression
+    interest_qs = Transaction.objects.filter(
+        payment_method='credit',
+        status='completed',
+        credit_settled_at__isnull=True,
+        member__isnull=False,
+    ).annotate(unpaid=_interest_outstanding_expression())
+    if restrict_member_role:
+        interest_qs = interest_qs.filter(member__member_role__slug='member')
+    total_interest = interest_qs.aggregate(t=Sum('unpaid'))['t'] or Decimal('0')
+    total_credit_outstanding = (
+        Decimal(total_principal) + Decimal(total_interest)
+    ).quantize(Decimal('0.01'))
     members_with_credit = (
-        credit_item_qs.values('transaction__member_id')
-        .annotate(total=Sum('total_price'))
-        .filter(total__gt=0)
-        .count()
+        Member.objects.filter(members_with_unsettled_credit_filter())
     )
+    if restrict_member_role:
+        members_with_credit = members_with_credit.filter(member_role__slug='member')
+    members_with_credit = members_with_credit.count()
 
     segment_discount_rules = list(
         SegmentProductGroupDiscount.objects.filter(is_active=True)
@@ -5802,14 +6299,21 @@ def member_management(request):
         )
     )
 
+    from helper.members_helper import member_complete_details_dict
+
     context = {
         'members': members_page,
         'page_obj': members_page,
         'members_filtered_total': members_paginator.count,
+        'members_elided_pages': members_elided_pages,
         'members_list_query': members_list_query,
         'members_base_query': members_base_query,
         'members_filter_query': members_filter_query,
         'member_types': member_types,
+        'member_complete_details_map': {
+            str(m.pk): member_complete_details_dict(m)
+            for m in members_page.object_list
+        },
         'total_members': total_members,
         'active_members': active_members,
         'inactive_members': inactive_members,
@@ -5829,13 +6333,152 @@ def member_management(request):
         'member_max_credit': member_max_credit,
         'credit_limit_enabled': credit_limit_enabled,
         'total_credit_outstanding': total_credit_outstanding,
+        'total_credit_interest': Decimal(total_interest).quantize(Decimal('0.01')),
         'members_with_credit': members_with_credit,
         'credit_filter': credit_filter,
         'sort_filter': sort_filter,
+        'credit_settings': credit_settings,
+        'credit_interest_enabled': bool(credit_settings.is_enabled and credit_settings.interest_rate > 0),
         **admin_role_badge_context(request),
     }
     
     return render(request, 'admin_panel/members.html', context)
+
+
+@login_required
+def credit_unpaid_history(request):
+    """
+    Transparency view: unpaid credit (utang) sales with dates since unpaid.
+    """
+    is_admin = is_cashier_or_admin(request.user)
+    is_staff_role_user = is_staff_role(request.user)
+    if not (is_admin or is_staff_role_user):
+        messages.warning(request, 'You do not have permission to access this page.')
+        return redirect('kiosk_home')
+
+    restrict_member_role = restricts_member_role_to_member_only(request.user)
+    search_query = request.GET.get('search', '').strip()
+
+    from helper.credit_interest_helper import (
+        ensure_credit_interest_up_to_date,
+        interest_start_date,
+        first_interest_due_date,
+        monthly_periods_due,
+        interest_rate_as_multiplier,
+        _principal_outstanding_for_sale,
+        _add_months,
+    )
+
+    ensure_credit_interest_up_to_date()
+    credit_settings = CreditSettings.get()
+    grace_days = int(credit_settings.grace_period_days or 0)
+    rate_mult = interest_rate_as_multiplier(credit_settings.interest_rate or 0)
+    interest_on = bool(credit_settings.is_enabled and rate_mult > 0)
+    today = timezone.localdate()
+
+    sales_qs = (
+        Transaction.objects.filter(
+            payment_method='credit',
+            status='completed',
+            credit_settled_at__isnull=True,
+            member__isnull=False,
+        )
+        .select_related('member', 'member__member_role')
+        .prefetch_related('items')
+        .order_by('created_at', 'id')
+    )
+    if restrict_member_role:
+        sales_qs = sales_qs.filter(member__member_role__slug='member')
+    if search_query:
+        sales_qs = sales_qs.filter(
+            Q(member__first_name__icontains=search_query)
+            | Q(member__last_name__icontains=search_query)
+            | Q(transaction_number__icontains=search_query)
+            | Q(member__rfid_card_number__icontains=search_query)
+        )
+
+    unpaid_rows = []
+    total_principal = Decimal('0.00')
+    total_interest = Decimal('0.00')
+    total_next_month = Decimal('0.00')
+
+    for sale in sales_qs:
+        principal = _principal_outstanding_for_sale(sale)
+        interest = sale.credit_interest_outstanding
+        if principal <= 0 and interest <= 0:
+            continue
+        sale_date = timezone.localtime(sale.created_at).date()
+        days_unpaid = (today - sale_date).days
+        grace_ends = interest_start_date(sale, grace_days)
+        first_due = first_interest_due_date(sale, grace_days)
+        months_late = monthly_periods_due(first_due, today) if interest_on else 0
+        within_grace = today < grace_ends
+        awaiting_first_month = (not within_grace) and today < first_due
+        days_past_grace = max((today - grace_ends).days, 0) if not within_grace else 0
+        total = (principal + interest).quantize(Decimal('0.01'))
+
+        # Projected total if still unpaid when the next monthly charge applies
+        next_interest_add = Decimal('0.00')
+        next_month_due = total
+        next_charge_on = None
+        if interest_on and principal > 0:
+            last_applied = sale.credit_interest_last_applied_on
+            already = monthly_periods_due(first_due, last_applied) if last_applied else 0
+            next_charge_on = _add_months(first_due, already)
+            if next_charge_on <= today:
+                next_charge_on = _add_months(next_charge_on, 1)
+            next_interest_add = (principal * rate_mult).quantize(Decimal('0.01'))
+            next_month_due = (total + next_interest_add).quantize(Decimal('0.01'))
+
+        total_principal += principal
+        total_interest += interest
+        total_next_month += next_month_due
+        unpaid_rows.append({
+            'sale': sale,
+            'member': sale.member,
+            'sale_date': sale_date,
+            'sale_datetime': timezone.localtime(sale.created_at),
+            'days_unpaid': days_unpaid,
+            'grace_ends': grace_ends,
+            'first_interest_due': first_due,
+            'within_grace': within_grace,
+            'awaiting_first_month': awaiting_first_month,
+            'days_past_grace': days_past_grace,
+            'months_late': months_late,
+            'principal': principal,
+            'interest': interest,
+            'total': total,
+            'next_interest_add': next_interest_add,
+            'next_month_due': next_month_due,
+            'next_charge_on': next_charge_on,
+            'receipt_url': reverse('view_credit_receipt', kwargs={'transaction_id': sale.id}),
+        })
+
+    # Newest unpaid first for scanning overdue
+    unpaid_rows.sort(key=lambda r: (r['days_unpaid'], r['sale_date']), reverse=True)
+
+    recent_payments = (
+        CreditPayment.objects.select_related('member', 'performed_by')
+        .order_by('-created_at')[:40]
+    )
+    if restrict_member_role:
+        recent_payments = recent_payments.filter(member__member_role__slug='member')
+
+    context = {
+        'unpaid_rows': unpaid_rows,
+        'unpaid_count': len(unpaid_rows),
+        'total_principal': total_principal.quantize(Decimal('0.01')),
+        'total_interest': total_interest.quantize(Decimal('0.01')),
+        'total_outstanding': (total_principal + total_interest).quantize(Decimal('0.01')),
+        'total_next_month': total_next_month.quantize(Decimal('0.01')),
+        'credit_settings': credit_settings,
+        'credit_interest_enabled': interest_on,
+        'search_query': search_query,
+        'recent_payments': recent_payments,
+        'is_admin': is_admin,
+        **admin_role_badge_context(request),
+    }
+    return render(request, 'admin_panel/credit_unpaid_history.html', context)
 
 
 def _serialize_credit_sale_for_pay_modal(sale: Transaction) -> dict:
@@ -5843,12 +6486,20 @@ def _serialize_credit_sale_for_pay_modal(sale: Transaction) -> dict:
         i for i in sale.items.all()
         if i.credit_settled_at is None and i.credit_line_outstanding > 0
     ]
-    unsettled_total = sum((i.credit_line_outstanding for i in unsettled_items), Decimal('0'))
+    unsettled_principal = sum((i.credit_line_outstanding for i in unsettled_items), Decimal('0'))
+    interest_out = sale.credit_interest_outstanding
+    unsettled_total = (unsettled_principal + interest_out).quantize(Decimal('0.01'))
+    sale_local = timezone.localtime(sale.created_at)
+    days_unpaid = (timezone.localdate() - sale_local.date()).days
     return {
         'id': sale.id,
         'transaction_number': sale.transaction_number,
-        'created_at': timezone.localtime(sale.created_at).strftime('%Y-%m-%d %I:%M %p'),
-        'total_amount': str(unsettled_total.quantize(Decimal('0.01'))),
+        'created_at': sale_local.strftime('%Y-%m-%d %I:%M %p'),
+        'sale_date': sale_local.strftime('%Y-%m-%d'),
+        'days_unpaid': days_unpaid,
+        'total_amount': str(unsettled_total),
+        'principal_amount': str(unsettled_principal.quantize(Decimal('0.01'))),
+        'interest_amount': str(interest_out.quantize(Decimal('0.01'))),
         'receipt_url': reverse('view_credit_receipt', kwargs={'transaction_id': sale.id}),
         'items': [
             {
@@ -5866,8 +6517,108 @@ def _serialize_credit_sale_for_pay_modal(sale: Transaction) -> dict:
 
 
 @require_http_methods(['GET', 'POST'])
+def api_credit_settings(request):
+    """GET/POST CreditSettings (interest rate + grace period) with Admin PIN on save."""
+    if not request.user.is_authenticated:
+        return JsonResponse(
+            {'success': False, 'error': 'Authentication required. Please log in again.'},
+            status=401,
+        )
+
+    is_admin = is_cashier_or_admin(request.user)
+    is_staff_role_user = is_staff_role(request.user)
+    if not (is_admin or is_staff_role_user):
+        return JsonResponse({'success': False, 'error': 'Permission denied'}, status=403)
+
+    config = CreditSettings.get()
+
+    if request.method == 'GET':
+        return JsonResponse({
+            'success': True,
+            'interest_rate': str(Decimal(config.interest_rate or 0).quantize(Decimal('0.001'))),
+            'grace_period_days': int(config.grace_period_days or 0),
+            'is_enabled': bool(config.is_enabled),
+        })
+
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON'}, status=400)
+
+    admin_pin = (data.get('admin_pin') or '').strip()
+    if not admin_pin or len(admin_pin) != 4 or not admin_pin.isdigit():
+        return JsonResponse({
+            'success': False,
+            'error': 'A valid 4-digit Admin PIN is required to save credit interest settings.',
+        })
+
+    session_member = _get_active_member_for_refill_user(request.user)
+    if not _resolve_refill_pin_authorizer(admin_pin, session_member):
+        return JsonResponse({
+            'success': False,
+            'error': 'Incorrect PIN. Enter the 4-digit PIN of an active Admin member with a PIN set.',
+        })
+
+    raw_rate = data.get('interest_rate')
+    try:
+        new_rate = Decimal(str(raw_rate if raw_rate is not None else '0'))
+    except Exception:
+        return JsonResponse({'success': False, 'error': 'Invalid interest rate'})
+
+    if new_rate < 0 or new_rate > Decimal('100'):
+        return JsonResponse({
+            'success': False,
+            'error': 'Interest rate must be between 0 and 100.',
+        })
+
+    try:
+        new_grace = int(data.get('grace_period_days', 0))
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': 'Invalid grace period days'})
+
+    if new_grace < 0 or new_grace > 3650:
+        return JsonResponse({
+            'success': False,
+            'error': 'Grace period must be between 0 and 3650 days.',
+        })
+
+    is_enabled = bool(data.get('is_enabled', True))
+    # Enabling with 0% rate is allowed but effectively no charge
+    if new_rate == 0:
+        is_enabled = False
+
+    new_rate = new_rate.quantize(Decimal('0.001'))
+    config.interest_rate = new_rate
+    config.grace_period_days = new_grace
+    config.is_enabled = is_enabled
+    config.save(update_fields=['interest_rate', 'grace_period_days', 'is_enabled', 'updated_at'])
+
+    # Accrue immediately so existing overdue utang picks up the new rate schedule
+    from helper.credit_interest_helper import ensure_credit_interest_up_to_date
+    ensure_credit_interest_up_to_date()
+
+    return JsonResponse({
+        'success': True,
+        'interest_rate': str(new_rate),
+        'grace_period_days': new_grace,
+        'is_enabled': is_enabled,
+    })
+
+
+@require_http_methods(['GET', 'POST'])
 def api_kiosk_credit_limit(request):
     """GET current member_max_credit; POST update with Admin PIN."""
+    from kiosk_helper import CREDIT_LIMIT_FEATURE_ENABLED
+
+    if not CREDIT_LIMIT_FEATURE_ENABLED:
+        return JsonResponse(
+            {'success': False, 'error': 'Credit limit settings are not available right now.'},
+            status=404,
+        )
+
     if not request.user.is_authenticated:
         return JsonResponse(
             {'success': False, 'error': 'Authentication required. Please log in again.'},
@@ -5957,8 +6708,13 @@ def api_member_credit_details(request):
 
     sales = list(unsettled_credit_sales(member))
     outstanding = member_credit_outstanding_amount(member)
-    kiosk_config = KioskConfig.get()
-    member_max_credit = Decimal(str(kiosk_config.member_max_credit or 0))
+    from kiosk_helper import get_member_max_credit_limit
+    from helper.credit_interest_helper import member_credit_interest_outstanding
+    from helper.credit_settlement_helper import member_credit_principal_outstanding
+    member_max_credit = get_member_max_credit_limit()
+    principal = member_credit_principal_outstanding(member)
+    interest = member_credit_interest_outstanding(member.pk)
+    credit_settings = CreditSettings.get()
 
     return JsonResponse({
         'success': True,
@@ -5969,7 +6725,12 @@ def api_member_credit_details(request):
             'balance': str(member.balance),
         },
         'credit_outstanding': str(outstanding),
+        'credit_principal': str(principal),
+        'credit_interest': str(interest),
         'member_max_credit': str(member_max_credit),
+        'credit_interest_enabled': bool(credit_settings.is_enabled and credit_settings.interest_rate > 0),
+        'interest_rate': str(Decimal(credit_settings.interest_rate or 0).quantize(Decimal('0.001'))),
+        'grace_period_days': int(credit_settings.grace_period_days or 0),
         'sales': [_serialize_credit_sale_for_pay_modal(s) for s in sales],
     })
 
@@ -6103,6 +6864,30 @@ def api_pay_member_credit(request):
 
         remaining_credit = member_credit_outstanding_amount(member)
 
+        try:
+            from admin_panel.audit import mark_audit_recorded, record_audit
+            record_audit(
+                'CREDIT_PAYMENT',
+                actor=request.user,
+                description=(
+                    f"Credit payment ₱{payment.amount_paid} for {member.full_name} "
+                    f"via {payment.payment_method}"
+                ),
+                request=request,
+                object_type='CreditPayment',
+                object_id=payment.pk,
+                metadata={
+                    'settlement_number': payment.settlement_number,
+                    'amount_paid': str(payment.amount_paid),
+                    'payment_method': payment.payment_method,
+                    'member': member.full_name,
+                    'remaining_credit': str(remaining_credit),
+                },
+            )
+            mark_audit_recorded(request)
+        except Exception:
+            pass
+
         return JsonResponse({
             'success': True,
             'message': (
@@ -6131,16 +6916,14 @@ def api_pay_member_credit(request):
 
 @login_required
 def backup_members_data(request):
-    """Export all member data as CSV backup file."""
-    # Check if user has permission (admin, cashier or staff role)
+    """Export member data as Excel (.xlsx) or CSV backup file."""
     is_admin = is_cashier_or_admin(request.user)
     is_staff_role_user = is_staff_role(request.user)
-    
+
     if not (is_admin or is_staff_role_user):
         messages.warning(request, 'You do not have permission to access this page.')
         return redirect('kiosk_home')
-    
-    # Get backup date from request, default to today
+
     backup_date_str = request.GET.get('date', '')
     if backup_date_str:
         try:
@@ -6149,26 +6932,17 @@ def backup_members_data(request):
             backup_date = timezone.now().date()
     else:
         backup_date = timezone.now().date()
-    
-    # Convert backup_date to datetime for comparison (end of day)
+
+    export_format = (request.GET.get('format') or 'xlsx').strip().lower()
+    if export_format not in ('xlsx', 'csv'):
+        export_format = 'xlsx'
+
     backup_datetime_end = timezone.make_aware(datetime.combine(backup_date, datetime.max.time()))
-    
-    # Get all members that existed on or before the backup date
-    # This includes all members (active and inactive/deleted) created on or before the backup date
     members = Member.objects.select_related('member_type', 'member_role', 'user').filter(
         created_at__lte=backup_datetime_end
     ).order_by('id')
-    
-    # Create CSV response with date in filename
-    date_str = backup_date.strftime('%Y%m%d')
-    response = HttpResponse(content_type='text/csv')
-    response['Content-Disposition'] = f'attachment; filename="members_backup_{date_str}.csv"'
-    
-    # Create CSV writer
-    writer = csv.writer(response)
-    
-    # Write header row
-    writer.writerow([
+
+    headers = [
         'ID',
         'RFID Card Number',
         'First Name',
@@ -6179,37 +6953,86 @@ def backup_members_data(request):
         'Member Type',
         'Role',
         'Balance',
+        'Share Capital',
         'Is Active',
+        'Inactive Remark',
         'Username',
         'Has PIN Set',
         'Date Joined',
         'Last Transaction',
         'Created At',
-        'Updated At'
-    ])
-    
-    # Write member data
+        'Updated At',
+    ]
+
+    def _fmt_dt(value):
+        if not value:
+            return ''
+        return timezone.localtime(value).strftime('%Y-%m-%d %H:%M:%S') if timezone.is_aware(value) else value.strftime('%Y-%m-%d %H:%M:%S')
+
+    rows = []
     for member in members:
-        writer.writerow([
+        rows.append([
             member.id,
-            member.rfid_card_number,
-            member.first_name,
-            member.last_name,
+            member.rfid_card_number or '',
+            member.first_name or '',
+            member.last_name or '',
             member.full_name,
             member.email or '',
             member.phone or '',
             member.member_type.name if member.member_type else '',
             member.get_role_display(),
             str(member.balance),
+            str(member.share_capital),
             'Yes' if member.is_active else 'No',
-            member.user.username if member.user else '',
+            member.inactive_remark or '',
+            member.username or (member.user.username if member.user_id else ''),
             'Yes' if member.pin_hash else 'No',
-            member.date_joined.strftime('%Y-%m-%d %H:%M:%S') if member.date_joined else '',
-            member.last_transaction.strftime('%Y-%m-%d %H:%M:%S') if member.last_transaction else '',
-            member.created_at.strftime('%Y-%m-%d %H:%M:%S') if member.created_at else '',
-            member.updated_at.strftime('%Y-%m-%d %H:%M:%S') if member.updated_at else '',
+            _fmt_dt(member.date_joined),
+            _fmt_dt(member.last_transaction),
+            _fmt_dt(member.created_at),
+            _fmt_dt(member.updated_at),
         ])
-    
+
+    date_str = backup_date.strftime('%Y%m%d')
+
+    if export_format == 'csv':
+        response = HttpResponse(content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="members_backup_{date_str}.csv"'
+        response.write('\ufeff')  # Excel-friendly UTF-8 BOM
+        writer = csv.writer(response)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        return response
+
+    from io import BytesIO
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = 'Members'
+    sheet.append(headers)
+    for row in rows:
+        sheet.append(row)
+
+    # Light header styling + reasonable column widths
+    from openpyxl.styles import Font
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    for col in sheet.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col[:50]:
+            max_len = max(max_len, len(str(cell.value or '')))
+        sheet.column_dimensions[col_letter].width = min(max(12, max_len + 2), 40)
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f'attachment; filename="members_backup_{date_str}.xlsx"'
     return response
 
 
@@ -6552,10 +7375,264 @@ def transaction_history(request):
         'status_filter_label': status_filter_label,
         'partially_refunded_transactions': partially_refunded_transactions,
         'partial_refund_net_amount': partial_refund_net_amount,
+        'txn_export_date_from': _store_local_today().isoformat(),
+        'txn_export_date_to': _store_local_today().isoformat(),
         **admin_role_badge_context(request),
     }
     
     return render(request, 'admin_panel/transactions.html', context)
+
+
+def _transaction_export_filters_from_request(request):
+    """Parse payment/status GET filters the same way as the transactions page."""
+    payment_method_filter = request.GET.get('payment_method', '').strip().lower()
+    if payment_method_filter and payment_method_filter not in dict(Transaction.PAYMENT_METHODS):
+        payment_method_filter = ''
+
+    valid_statuses = {c[0] for c in Transaction.STATUS_CHOICES}
+    status_filter = request.GET.get('status', '').strip().lower()
+    if status_filter not in valid_statuses:
+        status_filter = ''
+    return payment_method_filter, status_filter
+
+
+def _transaction_export_queryset(date_from, date_to, payment_method_filter='', status_filter=''):
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+    current_tz = timezone.get_current_timezone()
+    range_start_aware = timezone.make_aware(
+        datetime.combine(date_from, datetime.min.time()), current_tz
+    )
+    range_end_aware = timezone.make_aware(
+        datetime.combine(date_to + timedelta(days=1), datetime.min.time()), current_tz
+    )
+    qs = (
+        _exclude_test_transactions(Transaction.objects.all())
+        .filter(created_at__gte=range_start_aware, created_at__lt=range_end_aware)
+        .select_related('member', 'processed_by')
+        .order_by('-created_at', '-id')
+    )
+    if payment_method_filter:
+        qs = qs.filter(payment_method=payment_method_filter)
+    if status_filter:
+        qs = qs.filter(status=status_filter)
+    return date_from, date_to, qs
+
+
+def _transaction_export_row_values(txn):
+    created = timezone.localtime(txn.created_at) if txn.created_at else None
+    return {
+        'number': txn.transaction_number or '',
+        'customer': txn.customer_display_name,
+        'created': created,
+        'amount': Decimal(str(txn.total_amount or 0)),
+        'payment': txn.get_payment_method_display(),
+        'status': txn.get_status_display(),
+        'processed_by': txn.processed_by_display or '—',
+    }
+
+
+@login_required
+@require_http_methods(['GET'])
+def export_transaction_history(request):
+    """Download transaction history as PDF or Excel for a selected date range."""
+    if not is_cashier_or_admin(request.user):
+        messages.warning(request, 'You do not have permission to download transactions.')
+        return redirect('kiosk_home')
+
+    requested_format = (request.GET.get('format') or 'excel').strip().lower()
+    if requested_format not in ('pdf', 'excel'):
+        requested_format = 'excel'
+
+    date_from, date_to, _, _ = _staff_sales_date_range_from_request(request)
+    payment_method_filter, status_filter = _transaction_export_filters_from_request(request)
+    date_from, date_to, qs = _transaction_export_queryset(
+        date_from, date_to, payment_method_filter, status_filter
+    )
+
+    kiosk_config = KioskConfig.get()
+    store_name = kiosk_config.system_name if kiosk_config else 'Admin'
+    user_label = request.user.get_full_name() or request.user.username
+    date_slug = _staff_sales_date_slug(date_from, date_to)
+    filter_bits = []
+    if status_filter:
+        filter_bits.append(dict(Transaction.STATUS_CHOICES).get(status_filter, status_filter))
+    if payment_method_filter:
+        filter_bits.append(dict(Transaction.PAYMENT_METHODS).get(payment_method_filter, payment_method_filter))
+    filter_label = ' · '.join(filter_bits) if filter_bits else 'All statuses and payment methods'
+    txn_count = qs.count()
+    total_amount = qs.aggregate(total=Coalesce(Sum('total_amount'), Decimal('0.00')))['total'] or Decimal('0.00')
+
+    if requested_format == 'excel':
+        header_fill, header_font, thin_border = _staff_sales_excel_styles()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Transactions'
+        hdr_row = _staff_sales_write_excel_header(
+            ws,
+            f'Transaction History — {store_name}',
+            date_from,
+            date_to,
+            user_label,
+            extra_lines=[
+                f'Filters: {filter_label}',
+                f'Transactions: {txn_count}',
+                f'Total amount (PHP): {float(total_amount):,.2f}',
+            ],
+        )
+        hdr_row += 1
+        headers = [
+            '#', 'Transaction #', 'Customer', 'Date & Time',
+            'Amount (PHP)', 'Payment', 'Status', 'Processed by',
+        ]
+        for col, val in enumerate(headers, start=1):
+            c = ws.cell(row=hdr_row, column=col, value=val)
+            c.fill = header_fill
+            c.font = header_font
+            c.border = thin_border
+            c.alignment = Alignment(
+                horizontal='center' if col in (1, 5) else 'left',
+                vertical='center',
+            )
+
+        for idx, txn in enumerate(qs.iterator(chunk_size=500), start=1):
+            row = _transaction_export_row_values(txn)
+            created_str = row['created'].strftime('%Y-%m-%d %H:%M:%S') if row['created'] else ''
+            ws.append([
+                idx,
+                row['number'],
+                row['customer'],
+                created_str,
+                float(row['amount']),
+                row['payment'],
+                row['status'],
+                row['processed_by'],
+            ])
+
+        last_row = ws.max_row
+        for r in range(hdr_row + 1, last_row + 1):
+            for col in range(1, 9):
+                cell = ws.cell(row=r, column=col)
+                cell.border = thin_border
+                if col == 5:
+                    cell.number_format = '#,##0.00'
+                    cell.alignment = Alignment(horizontal='right')
+                elif col == 1:
+                    cell.alignment = Alignment(horizontal='center')
+        total_row = last_row + 1
+        ws.cell(row=total_row, column=2, value='Total')
+        ws.cell(row=total_row, column=2).font = Font(bold=True)
+        total_cell = ws.cell(row=total_row, column=5, value=float(total_amount))
+        total_cell.number_format = '#,##0.00'
+        total_cell.font = Font(bold=True)
+        for col in range(1, 9):
+            ws.cell(row=total_row, column=col).border = thin_border
+        for col, width in zip('ABCDEFGH', [6, 20, 28, 20, 16, 22, 22, 22]):
+            ws.column_dimensions[col].width = width
+
+        return _staff_sales_excel_response(wb, f'transactions_{date_slug}.xlsx')
+
+    pdf_primary_dark = colors.HexColor('#C4121A')
+    pdf_heading = colors.HexColor('#166534')
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'TxnExportTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        textColor=pdf_primary_dark,
+        spaceAfter=10,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+    )
+    cell_style = ParagraphStyle(
+        'TxnExportCell',
+        parent=styles['Normal'],
+        fontSize=7,
+        leading=9,
+    )
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=28,
+        leftMargin=28,
+        topMargin=28,
+        bottomMargin=28,
+    )
+    elements = [
+        Paragraph('Transaction History', title_style),
+        Paragraph(f'<i>{escape(store_name)}</i>', styles['Normal']),
+        Spacer(1, 0.1 * inch),
+        Paragraph(
+            f'Period: {date_from.isoformat()} to {date_to.isoformat()}',
+            styles['Normal'],
+        ),
+        Paragraph(
+            f'Generated: {escape(timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M"))}'
+            f' — {escape(user_label)}',
+            styles['Normal'],
+        ),
+        Paragraph(f'Filters: {escape(filter_label)}', styles['Normal']),
+        Spacer(1, 0.08 * inch),
+        Paragraph(
+            f'<b>Transactions:</b> {txn_count} &nbsp;|&nbsp; '
+            f'<b>Total amount:</b> PHP {float(total_amount):,.2f}',
+            styles['Normal'],
+        ),
+        Spacer(1, 0.16 * inch),
+    ]
+
+    table_data = [[
+        '#', 'Transaction #', 'Customer', 'Date & Time',
+        'Amount (PHP)', 'Payment', 'Status', 'Processed by',
+    ]]
+    for idx, txn in enumerate(qs.iterator(chunk_size=500), start=1):
+        row = _transaction_export_row_values(txn)
+        created_str = row['created'].strftime('%Y-%m-%d %H:%M') if row['created'] else ''
+        table_data.append([
+            str(idx),
+            Paragraph(escape(row['number']), cell_style),
+            Paragraph(escape(row['customer']), cell_style),
+            created_str,
+            f'{float(row["amount"]):,.2f}',
+            Paragraph(escape(row['payment']), cell_style),
+            Paragraph(escape(row['status']), cell_style),
+            Paragraph(escape(row['processed_by']), cell_style),
+        ])
+    if txn_count == 0:
+        table_data.append(['', 'No transactions in this date range.', '', '', '', '', '', ''])
+    else:
+        table_data.append([
+            '', 'Total', '', '', f'{float(total_amount):,.2f}', '', '', '',
+        ])
+
+    tbl = Table(
+        table_data,
+        colWidths=[28, 95, 110, 78, 70, 90, 90, 90],
+        repeatRows=1,
+    )
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), pdf_heading),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 7),
+        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+        ('ALIGN', (4, 0), (4, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#d1d5db')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#f8fafc')]),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(tbl)
+    doc.build(elements)
+    pdf = buffer.getvalue()
+    resp = HttpResponse(pdf, content_type='application/pdf')
+    resp['Content-Disposition'] = f'attachment; filename="transactions_{date_slug}.pdf"'
+    return resp
 
 
 @login_required
@@ -6679,35 +7756,21 @@ def api_reverse_balance_refill(request):
 
 @require_http_methods(["GET", "POST"])
 def admin_logout(request):
-    """Custom admin logout that redirects to root login page (login.html)
-    All users (including staff) are redirected to the login page after logout.
-    """
-    # Logout the user
-    logout(request)
-    messages.success(request, 'You have been successfully logged out.')
-    
-    # Redirect all users (including staff) to root login page without any query parameters
-    # Use reverse to ensure we go to the root login page, not /admin/login/
-    return redirect(reverse('root_login'))
+    """Log out every role (admin, cashier, staff, committee, member) to the login page."""
+    return _logout_to_login(request)
 
 
 @require_http_methods(["GET", "POST"])
 def kiosk_logout(request):
-    """Logout endpoint that renders login.html directly"""
-    # Clear Django user session
-    logout(request)
-    
-    # Clear member session data (for members without Django user accounts)
-    if 'member_id' in request.session:
-        del request.session['member_id']
-    if 'member_rfid' in request.session:
-        del request.session['member_rfid']
-    if 'member_role' in request.session:
-        del request.session['member_role']
-    
+    """Logout endpoint that clears all session state and shows the login page."""
+    return _logout_to_login(request)
+
+
+def _logout_to_login(request):
+    logout_user(request)
     messages.success(request, 'You have been successfully logged out.')
     store_profile = StoreProfile.get()
-    return render(
+    response = render(
         request,
         'admin_panel/login.html',
         {
@@ -6715,6 +7778,10 @@ def kiosk_logout(request):
             'clear_kiosk_browser_state': True,
         },
     )
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response['Pragma'] = 'no-cache'
+    response['Expires'] = '0'
+    return response
 
 
 @member_or_login_required
@@ -6722,6 +7789,8 @@ def user_choice(request):
     """Choice page for regular users after login - view transactions or go to kiosk"""
     # Check if user is authenticated (Django user)
     if request.user.is_authenticated:
+        if is_loans_only_user(request.user):
+            return redirect('loans_overview')
         if is_cashier_or_admin(request.user):
             return redirect('dashboard')
         # Get member associated with user for template
@@ -6932,10 +8001,12 @@ def api_search_members(request):
         ).filter(is_active=True)[:20]
         
         results = []
+        show_full_rfid = is_admin_user(request.user)
         for member in members:
+            rfid_value = member.rfid_card_number or ''
             results.append({
                 'id': member.id,
-                'rfid': member.rfid_card_number,
+                'rfid': rfid_value if show_full_rfid else mask_rfid(rfid_value),
                 'name': member.full_name,
                 'email': member.email or '',
                 'current_balance': str(member.balance),
@@ -7005,14 +8076,43 @@ def _resolve_refill_pin_authorizer(admin_pin, session_member):
 
 def _resolve_member_edit_pin_authorizer(pin, session_member):
     """
-    Accept edit authorisation PIN from either:
-    - the logged-in member (admin/cashier/staff), or
-    - any active Admin member.
+    Accept edit authorisation PIN by verifying against pin_hash in the database.
+
+    Prefers the logged-in member when their role is admin/cashier/staff.
+    Otherwise accepts any active member that has a PIN set whose hash matches.
     """
+    pin = (pin or '').strip()
+    if not pin or not pin.isdigit() or len(pin) != 4:
+        return None
+
     if session_member and session_member.role in _EDIT_SELF_PIN_ROLES:
         if session_member.check_pin(pin):
             return session_member
-    return _resolve_refill_pin_authorizer(pin, session_member)
+
+    qs = (
+        Member.objects.filter(is_active=True)
+        .exclude(pin_hash__isnull=True)
+        .exclude(pin_hash='')
+        .select_related('member_role')
+        .order_by('id')
+    )
+    skip_pk = session_member.pk if session_member else None
+    for m in qs:
+        if skip_pk is not None and m.pk == skip_pk:
+            continue
+        if m.check_pin(pin):
+            return m
+    return None
+
+
+def _member_edit_pin_available():
+    """True when at least one active member has a PIN saved in the database."""
+    return (
+        Member.objects.filter(is_active=True)
+        .exclude(pin_hash__isnull=True)
+        .exclude(pin_hash='')
+        .exists()
+    )
 
 
 def _resolve_refund_pin_authorizer(pin, session_member):
@@ -7206,7 +8306,7 @@ This notification was sent automatically by the system.
                     subject = f'Your Card Balance Has Been Refilled — ₱{amount:.2f}'
                     body = f"""Hi {member.first_name},
 
-Great news! Your Gen-Glow card balance has been successfully refilled.
+Great news! Your BAGNOS MPC card balance has been successfully refilled.
 
 Transaction Summary:
   • Transaction # : {refill_transaction_number}
@@ -7219,7 +8319,7 @@ please contact the admin immediately.
 
 Transaction Date: {timestamp_str}
 
-Thank you for using Gen-Glow!
+Thank you for using BAGNOS MPC!
 """
                     email_msg = EmailMessage(
                         subject=subject,
@@ -7236,6 +8336,29 @@ Thank you for using Gen-Glow!
         threading.Thread(target=send_member_email, daemon=True).start()
 
         member_email_sent = bool(member.email)
+
+        try:
+            from admin_panel.audit import mark_audit_recorded, record_audit
+            record_audit(
+                'BALANCE_REFILL',
+                actor=request.user,
+                description=(
+                    f"Refilled ₱{amount:.2f} to {member.full_name} "
+                    f"(new balance ₱{member.balance})"
+                ),
+                request=request,
+                object_type='Member',
+                object_id=member.pk,
+                metadata={
+                    'amount': str(amount),
+                    'member': member.full_name,
+                    'new_balance': str(member.balance),
+                    'transaction_number': refill_transaction_number,
+                },
+            )
+            mark_audit_recorded(request)
+        except Exception:
+            pass
 
         return JsonResponse({
             'success': True,
@@ -8729,6 +9852,152 @@ def api_void_transaction_item(request):
     })
 
 
+# Statuses where a sale typically still holds deducted stock / unpaid debit liability.
+_TXN_DELETE_REVERSAL_STATUSES = frozenset({
+    'completed',
+    'partially_refunded',
+    'refund_requested',
+    'return_window',
+    'return_expired',
+})
+
+
+@login_required
+@require_http_methods(["POST"])
+def api_delete_transaction(request):
+    """Permanently delete a sale transaction. Admin role only; written to the audit trail.
+
+    For active sale statuses, restores stock on non-refunded lines and credits back
+    remaining debit amounts. Refuses delete when the sale is tied to a credit settlement.
+    """
+    if not is_admin_user(request.user):
+        return JsonResponse({'success': False, 'error': 'Permission denied'}, status=403)
+
+    try:
+        data = json.loads(request.body.decode('utf-8'))
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON payload'}, status=400)
+
+    transaction_id = data.get('id') or data.get('transaction_id')
+    if not transaction_id:
+        return JsonResponse({'success': False, 'error': 'Transaction ID is required'}, status=400)
+
+    try:
+        transaction_id = int(transaction_id)
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': 'Invalid transaction ID'}, status=400)
+
+    try:
+        with db_transaction.atomic():
+            txn = (
+                Transaction.objects.select_for_update()
+                .select_related('member')
+                .prefetch_related('items__product')
+                .get(id=transaction_id)
+            )
+
+            if CreditPaymentLine.objects.filter(item__transaction_id=txn.pk).exists():
+                return JsonResponse({
+                    'success': False,
+                    'error': (
+                        'This transaction has credit payment settlement lines and cannot be deleted. '
+                        'Reverse or adjust the credit payment first.'
+                    ),
+                }, status=400)
+
+            txn_number = txn.transaction_number or str(txn.pk)
+            txn_amount = str(txn.total_amount)
+            txn_status = txn.status
+            txn_payment = txn.payment_method
+            member_name = txn.customer_display_name
+            txn_pk = txn.pk
+
+            restocked_lines = 0
+            balance_restored = Decimal('0.00')
+
+            if txn.status in _TXN_DELETE_REVERSAL_STATUSES:
+                active_items = [
+                    item for item in txn.items.all()
+                    if item.refunded_at is None
+                ]
+
+                for item in active_items:
+                    if not item.product_id:
+                        continue
+                    product = Product.objects.select_for_update().get(pk=item.product_id)
+                    before_snap = capture_stock_snapshot(product)
+                    product.stock_quantity += item.quantity
+                    product.save(update_fields=['stock_quantity', 'updated_at'])
+                    record_stock_history(
+                        product,
+                        ProductStockHistory.CHANGE_REFUND,
+                        before_snap,
+                        note=f'Delete transaction {txn_number} — restock',
+                        user=request.user,
+                    )
+                    restocked_lines += 1
+
+                if txn.payment_method == 'debit' and txn.member_id and active_items:
+                    restore_amount = sum(
+                        (Decimal(str(item.total_price or 0)) for item in active_items),
+                        Decimal('0.00'),
+                    ).quantize(Decimal('0.01'))
+                    if restore_amount > 0:
+                        member = Member.objects.select_for_update().get(pk=txn.member_id)
+                        balance_before = member.balance
+                        member.add_balance(restore_amount)
+                        member.refresh_from_db(fields=['balance'])
+                        BalanceTransaction.objects.create(
+                            member=member,
+                            transaction_type='deposit',
+                            amount=restore_amount,
+                            balance_before=balance_before,
+                            balance_after=member.balance,
+                            notes=f'Delete transaction {txn_number} — restored debit amount',
+                        )
+                        balance_restored = restore_amount
+
+            txn.delete()
+    except Transaction.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Transaction not found'}, status=404)
+    except Exception:
+        return JsonResponse({
+            'success': False,
+            'error': 'Could not delete this transaction. It may still be linked to other records.',
+        }, status=400)
+
+    try:
+        from admin_panel.audit import mark_audit_recorded, record_audit
+        record_audit(
+            WebsiteAuditLog.Action.TRANSACTION,
+            actor=request.user,
+            description=(
+                f'Deleted transaction {txn_number} '
+                f'({member_name}, ₱{txn_amount}, {txn_status})'
+            ),
+            request=request,
+            object_type='Transaction',
+            object_id=txn_pk,
+            metadata={
+                'transaction_number': txn_number,
+                'member': member_name,
+                'amount': txn_amount,
+                'status': txn_status,
+                'payment_method': txn_payment,
+                'restocked_lines': restocked_lines,
+                'balance_restored': str(balance_restored),
+            },
+        )
+        mark_audit_recorded(request)
+    except Exception:
+        pass
+
+    return JsonResponse({
+        'success': True,
+        'message': f'Transaction {txn_number} deleted successfully.',
+    })
+
+
 @login_required
 @require_http_methods(["POST"])
 def api_update_transaction(request):
@@ -9481,6 +10750,29 @@ def api_process_refund(request):
             request=request,
             receipt_item_ids=receipt_item_ids,
         )
+
+        try:
+            from admin_panel.audit import mark_audit_recorded, record_audit
+            record_audit(
+                'REFUND',
+                actor=request.user,
+                description=(
+                    f"{'Partial ' if is_partial else ''}Refund ₱{refund_amount} "
+                    f"for {transaction.transaction_number}"
+                ),
+                request=request,
+                object_type='Transaction',
+                object_id=transaction.pk,
+                metadata={
+                    'transaction_number': transaction.transaction_number,
+                    'refund_amount': str(refund_amount),
+                    'is_partial': is_partial,
+                    'reason': (refund_reason or '')[:200],
+                },
+            )
+            mark_audit_recorded(request)
+        except Exception:
+            pass
         
         return JsonResponse({
             'success': True,
@@ -9549,10 +10841,10 @@ def generate_daily_report_pdf(request):
     # Use "PHP" instead of peso sign for better font compatibility in PDF
     currency_symbol = "PHP "
     # Keep report colors aligned with the system theme palette.
-    pdf_primary = colors.HexColor('#F58220')
-    pdf_primary_dark = colors.HexColor('#00A651')
+    pdf_primary = colors.HexColor('#ED1C24')
+    pdf_primary_dark = colors.HexColor('#C4121A')
     pdf_heading = colors.HexColor('#166534')
-    pdf_row_alt = colors.HexColor('#ecfdf3')
+    pdf_row_alt = colors.HexColor('#FEF7D5')
 
     # Define custom styles
     title_style = ParagraphStyle(
@@ -10704,7 +11996,7 @@ def download_product_barcodes_pdf(request):
     )
     price_style = ParagraphStyle(
         'PPrice', fontSize=10, alignment=TA_CENTER,
-        textColor=colors.HexColor('#F58220'), fontName='Helvetica-Bold'
+        textColor=colors.HexColor('#ED1C24'), fontName='Helvetica-Bold'
     )
     cat_style = ParagraphStyle(
         'PCat', fontSize=6, alignment=TA_CENTER,
@@ -10734,7 +12026,7 @@ def download_product_barcodes_pdf(request):
     )
     badge_style = ParagraphStyle(
         'PBadge', fontSize=7, alignment=TA_CENTER,
-        textColor=colors.HexColor('#00A651'), fontName='Helvetica-Bold',
+        textColor=colors.HexColor('#E6C200'), fontName='Helvetica-Bold',
     )
     wholesale_badge_style = ParagraphStyle(
         'PWholesaleBadge', fontSize=7, alignment=TA_CENTER,
@@ -10915,8 +12207,8 @@ def download_product_barcodes_pdf(request):
                     colWidths=[total_table_width],
                 )
                 banner_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F58220')),
-                    ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#00A651')),
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#ED1C24')),
+                    ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E6C200')),
                     ('TOPPADDING', (0, 0), (-1, -1), 7),
                     ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
                     ('LEFTPADDING', (0, 0), (-1, -1), 10),
@@ -10940,7 +12232,7 @@ def download_product_barcodes_pdf(request):
 
                 prod_table = Table(all_rows, colWidths=[col_width] * items_per_row)
                 prod_table.setStyle(TableStyle([
-                    ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#F58220')),
+                    ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#ED1C24')),
                     ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -11155,9 +12447,19 @@ def _payment_method_label(method):
     return {'cash': 'Cash', 'debit': 'Debit', 'credit': 'Credit'}.get(method, (method or '').title())
 
 
+STAFF_SALES_FEATURE_ENABLED = False
+
+
+def _redirect_staff_sales_disabled():
+    """Staff Sales is hidden from the console until it is needed again."""
+    return redirect('dashboard')
+
+
 @login_required
 def staff_sales_report(request):
     """Overview: list all cashier & staff members with their sales KPIs."""
+    if not STAFF_SALES_FEATURE_ENABLED:
+        return _redirect_staff_sales_disabled()
     if not is_admin_user(request.user):
         messages.warning(request, 'You do not have permission to access this page.')
         return redirect('kiosk_home')
@@ -11185,6 +12487,8 @@ def staff_sales_report(request):
 @require_http_methods(['GET'])
 def export_staff_sales_overview(request):
     """Download all staff/cashier sales summary as Excel or PDF."""
+    if not STAFF_SALES_FEATURE_ENABLED:
+        return _redirect_staff_sales_disabled()
     if not is_admin_user(request.user):
         messages.warning(request, 'You do not have permission to export this report.')
         return redirect('kiosk_home')
@@ -11260,7 +12564,7 @@ def export_staff_sales_overview(request):
 
         return _staff_sales_excel_response(wb, f'staff_sales_overview_{date_slug}.xlsx')
 
-    pdf_primary_dark = colors.HexColor('#00A651')
+    pdf_primary_dark = colors.HexColor('#C4121A')
     pdf_heading = colors.HexColor('#166534')
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
@@ -11331,6 +12635,8 @@ def export_staff_sales_overview(request):
 @login_required
 def staff_sales_detail(request, member_id):
     """Detail: individual transactions for a specific cashier/staff member."""
+    if not STAFF_SALES_FEATURE_ENABLED:
+        return _redirect_staff_sales_disabled()
     if not is_admin_user(request.user):
         messages.warning(request, 'You do not have permission to access this page.')
         return redirect('kiosk_home')
@@ -11383,6 +12689,8 @@ def staff_sales_detail(request, member_id):
 @require_http_methods(['GET'])
 def export_staff_sales_detail(request, member_id):
     """Download individual staff/cashier sales summary and transactions as Excel or PDF."""
+    if not STAFF_SALES_FEATURE_ENABLED:
+        return _redirect_staff_sales_disabled()
     if not is_admin_user(request.user):
         messages.warning(request, 'You do not have permission to export this report.')
         return redirect('kiosk_home')
@@ -11491,7 +12799,7 @@ def export_staff_sales_detail(request, member_id):
 
         return _staff_sales_excel_response(wb, f'staff_sales_{file_slug}_{date_slug}.xlsx')
 
-    pdf_primary_dark = colors.HexColor('#00A651')
+    pdf_primary_dark = colors.HexColor('#C4121A')
     pdf_heading = colors.HexColor('#166534')
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
@@ -11567,3 +12875,76 @@ def export_staff_sales_detail(request, member_id):
     doc.build(elements)
     buffer.seek(0)
     return _staff_sales_pdf_response(buffer, f'staff_sales_{file_slug}_{date_slug}.pdf')
+
+@login_required
+def website_audit_trail(request):
+    """Admin-only monitor of site-wide activity (login, logout, staff actions)."""
+    if not is_admin_user(request.user):
+        messages.warning(request, 'You do not have permission to access this page.')
+        return redirect('kiosk_home')
+
+    kiosk_config = KioskConfig.get()
+    qs = WebsiteAuditLog.objects.select_related('actor').all()
+
+    action_filter = (request.GET.get('action') or '').strip()
+    actor_q = (request.GET.get('q') or '').strip()
+    date_from_raw = (request.GET.get('date_from') or '').strip()
+    date_to_raw = (request.GET.get('date_to') or '').strip()
+
+    if action_filter and action_filter in dict(WebsiteAuditLog.Action.choices):
+        qs = qs.filter(action=action_filter)
+
+    if actor_q:
+        qs = qs.filter(
+            Q(actor_label__icontains=actor_q)
+            | Q(description__icontains=actor_q)
+            | Q(request_path__icontains=actor_q)
+            | Q(actor__username__icontains=actor_q)
+        )
+
+    today = timezone.localdate()
+    date_from = today - timedelta(days=7)
+    date_to = today
+    try:
+        if date_from_raw:
+            date_from = date_type.fromisoformat(date_from_raw)
+    except ValueError:
+        pass
+    try:
+        if date_to_raw:
+            date_to = date_type.fromisoformat(date_to_raw)
+    except ValueError:
+        pass
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    range_start = timezone.make_aware(datetime.combine(date_from, datetime.min.time()))
+    range_end = timezone.make_aware(datetime.combine(date_to, datetime.max.time()))
+    qs = qs.filter(created_at__gte=range_start, created_at__lte=range_end)
+
+    total_events = qs.count()
+    login_count = qs.filter(action=WebsiteAuditLog.Action.LOGIN).count()
+    logout_count = qs.filter(action=WebsiteAuditLog.Action.LOGOUT).count()
+    failed_count = qs.filter(action=WebsiteAuditLog.Action.LOGIN_FAILED).count()
+
+    paginator = Paginator(qs, 50)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    context = {
+        'page_obj': page_obj,
+        'audit_logs': page_obj.object_list,
+        'action_choices': WebsiteAuditLog.Action.choices,
+        'action_filter': action_filter,
+        'actor_q': actor_q,
+        'date_from': date_from.strftime('%Y-%m-%d'),
+        'date_to': date_to.strftime('%Y-%m-%d'),
+        'total_events': total_events,
+        'login_count': login_count,
+        'logout_count': logout_count,
+        'failed_count': failed_count,
+        'kiosk_system_name': kiosk_config.system_name if kiosk_config else 'Admin',
+        'nav_active': 'audit',
+        **admin_role_badge_context(request),
+    }
+    return render(request, 'admin_panel/audit_trail.html', context)
+

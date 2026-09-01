@@ -9,8 +9,10 @@ from .models import (
     ReportScheduleConfig,
     StoreProfile,
     KioskConfig,
+    CreditSettings,
     KioskSessionConfig,
     PrinterSettings,
+    WebsiteAuditLog,
 )
 
 
@@ -310,13 +312,6 @@ class KioskConfigAdmin(admin.ModelAdmin):
             'description': 'Text printed on every transaction receipt (on-screen, print, and plain-text versions).',
             'fields': ('receipt_subtitle', 'receipt_thank_you', 'receipt_footer_customer_tagline', 'receipt_footer_merchant_note'),
         }),
-        ('Credit Setup', {
-            'description': (
-                'Limit how much unpaid credit (utang) each member may carry. '
-                'Outstanding credit is the sum of completed credit sales not yet paid off.'
-            ),
-            'fields': ('member_max_credit',),
-        }),
         ('Tax Settings', {
             'description': (
                 'Enable or disable VAT/tax calculation for the entire kiosk. '
@@ -350,6 +345,46 @@ class KioskConfigAdmin(admin.ModelAdmin):
 
 
 admin.site.register(KioskConfig, KioskConfigAdmin)
+
+
+@admin.register(CreditSettings, site=secure_admin_site)
+class CreditSettingsAdmin(admin.ModelAdmin):
+    fieldsets = (
+        ('Credit Interest (Utang)', {
+            'description': (
+                'After the grace period, each unpaid month adds principal × rate. '
+                'Example: ₱500 → ₱507.50 (month 1); month 2 adds another ₱7.50 → ₱515. '
+                'You can also edit these from Members → Credit Interest Settings.'
+            ),
+            'fields': ('is_enabled', 'interest_rate', 'grace_period_days'),
+        }),
+        ('Metadata', {
+            'fields': ('updated_at',),
+            'classes': ('collapse',),
+        }),
+    )
+    readonly_fields = ('updated_at',)
+
+    def has_add_permission(self, request):
+        return not CreditSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        config = CreditSettings.get()
+        return redirect(
+            reverse('admin:admin_panel_creditsettings_change', args=[config.pk])
+        )
+
+    def save_model(self, request, obj, form, change):
+        if obj.interest_rate is not None and obj.interest_rate <= 0:
+            obj.is_enabled = False
+        super().save_model(request, obj, form, change)
+        messages.success(request, 'Credit interest settings updated successfully.')
+
+
+admin.site.register(CreditSettings, CreditSettingsAdmin)
 
 
 @admin.register(KioskSessionConfig, site=secure_admin_site)
@@ -600,3 +635,45 @@ admin.site.register(PrinterSettings, PrinterSettingsAdmin)
 # Custom admin home with Export / Import all data banner
 admin.site.index_template = 'admin/custom_index.html'
 
+
+@admin.register(WebsiteAuditLog, site=secure_admin_site)
+class WebsiteAuditLogAdmin(admin.ModelAdmin):
+    """Append-only site activity log — viewable in Django admin for super-admins."""
+
+    list_display = (
+        'created_at',
+        'action',
+        'actor_label',
+        'request_method',
+        'request_path',
+        'ip_address',
+    )
+    list_filter = ('action', 'created_at')
+    search_fields = ('actor_label', 'description', 'request_path', 'actor__username', 'ip_address')
+    readonly_fields = (
+        'action',
+        'actor',
+        'actor_label',
+        'description',
+        'request_method',
+        'request_path',
+        'object_type',
+        'object_id',
+        'metadata',
+        'ip_address',
+        'created_at',
+    )
+    date_hierarchy = 'created_at'
+    ordering = ('-created_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+admin.site.register(WebsiteAuditLog, WebsiteAuditLogAdmin)

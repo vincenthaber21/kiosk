@@ -3,25 +3,28 @@ Generate Genglo Printing Services logo assets for the mobile app.
 Produces: icon.png, adaptive-icon.png, splash.png, favicon.png
 
 Design language mirrors HomeScreen.js:
-  • Orange→green gradient header (#F58220 → #00A651) — Ortega brand / accent
+  • Red→gold gradient header (#ED1C24 → #E6C200) — Bagnos brand / accent
   • White raised heroCard with drop-shadow
-  • Wallet icon + peso "₱" in brand orange (wallet-outline from HomeScreen)
-  • App name in bold white  •  subtitle in mint
+  • Wallet icon + peso "₱" in brand red (wallet-outline from HomeScreen)
+  • App name in bold white  •  subtitle in cream
 """
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 import os
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "mobile_app", "assets")
 
-# ─── Colour Palette (Ortega logo: orange + green) ────────────────────────────
-C_BG1        = (245, 130,  32)  # colors.brand  #F58220
-C_BG2        = (0,   166,  81)  # colors.accent #00A651
-C_GREEN      = (0,   166,  81)  # logo green
-C_LIGHT_GRN  = (45,  190, 106)  # #2DBE6A — light green tint
-C_MINT       = (166, 220, 180)  # #a6dcb4 — subtitle / accent ring
+# ─── Colour Palette (Bagnos logo: red + yellow) ────────────────────────────
+C_BG1        = (237,  28,  36)  # colors.brand  #ED1C24
+C_BG2        = (230, 194,   0)  # colors.accent #E6C200
+C_GOLD       = (230, 194,   0)  # logo yellow
+C_LIGHT_GOLD = (255, 242,   0)  # #FFF200 — star yellow
+C_CREAM      = (254, 247, 213)  # #FEF7D5 — subtitle / accent ring
+C_GREEN      = C_GOLD           # alias for older call sites
+C_LIGHT_GRN  = C_LIGHT_GOLD
+C_MINT       = C_CREAM
 C_WHITE      = (255, 255, 255)
 C_CARD       = (255, 255, 255)  # panel = #ffffff (heroCard)
-C_CARD_TINT  = (255, 248, 240)  # warm off-white tint
+C_CARD_TINT  = (254, 247, 213)  # cream off-white tint
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────

@@ -163,6 +163,23 @@ class Transaction(models.Model):
         blank=True,
         related_name="settled_sales",
     )
+    credit_interest_accrued = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Total interest charged on this credit sale (after grace period).",
+    )
+    credit_interest_paid = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Interest amount already paid toward this credit sale.",
+    )
+    credit_interest_last_applied_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date of the last monthly interest period applied.",
+    )
     processed_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -186,6 +203,13 @@ class Transaction(models.Model):
     @property
     def processed_by_display(self):
         return user_processor_display(self.processed_by)
+
+    @property
+    def credit_interest_outstanding(self) -> Decimal:
+        """Unpaid interest on this credit (utang) sale."""
+        accrued = Decimal(self.credit_interest_accrued or 0).quantize(Decimal("0.01"))
+        paid = Decimal(self.credit_interest_paid or 0).quantize(Decimal("0.01"))
+        return max((accrued - paid).quantize(Decimal("0.01")), Decimal("0.00"))
 
     def __str__(self):
         num = self.transaction_number or "(pending)"
@@ -266,7 +290,7 @@ class TransactionItem(models.Model):
     product_name = models.CharField(max_length=200)
     product_barcode = models.CharField(max_length=100)
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
-    quantity = models.IntegerField(default=1)
+    quantity = models.DecimalField(max_digits=14, decimal_places=3, default=1)
     manual_discount_php = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -306,6 +330,17 @@ class TransactionItem(models.Model):
     @property
     def is_refunded(self):
         return self.refunded_at is not None
+
+    @property
+    def quantity_display(self):
+        from inventory.units import UNIT_KILO, UNIT_PIECE, format_qty_display
+
+        unit_type = UNIT_PIECE
+        if self.product_id and getattr(self.product, 'unit_type', None):
+            unit_type = self.product.unit_type
+        elif self.quantity is not None and Decimal(self.quantity) != Decimal(self.quantity).to_integral_value():
+            unit_type = UNIT_KILO
+        return format_qty_display(self.quantity, unit_type, with_unit=True)
 
     @property
     def credit_line_amount(self) -> Decimal:
@@ -492,6 +527,12 @@ class CreditPayment(models.Model):
         related_name="credit_payments",
     )
     amount_paid = models.DecimalField(max_digits=12, decimal_places=2)
+    interest_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Portion of amount_paid applied to credit interest.",
+    )
     payment_method = models.CharField(max_length=20, choices=PAYMENT_METHODS)
     balance_before = models.DecimalField(
         max_digits=10,

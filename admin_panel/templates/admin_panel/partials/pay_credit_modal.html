@@ -38,6 +38,11 @@
             <div class="p-3 rounded border bg-light">
               <div class="fw-semibold" id="payCreditMemberName">—</div>
               <div class="small text-muted">Outstanding credit: <span class="fw-bold" style="color:#5b21b6;" id="payCreditOutstanding">₱0.00</span></div>
+              <div class="small text-muted" id="payCreditInterestWrap" style="display:none;">
+                Principal <span id="payCreditPrincipal">₱0.00</span>
+                · Interest <span class="fw-semibold" id="payCreditInterest">₱0.00</span>
+                <span class="d-block mt-1" style="color:#5b21b6;">Payment pays interest first, then principal. Next months: (remaining principal × rate) + principal.</span>
+              </div>
               <div class="small text-muted">Card balance: <span id="payCreditMemberBalance">₱0.00</span></div>
               <div class="small text-muted" id="payCreditMemberEmailWrap" style="display:none;">Email: <span id="payCreditMemberEmail"></span></div>
             </div>
@@ -72,7 +77,7 @@
                 <input type="number" class="form-control" id="payCreditAmount" min="0.01" step="0.01" inputmode="decimal" aria-describedby="payCreditAmountError">
               </div>
               <div id="payCreditAmountError" class="text-danger small mt-1" style="display:none;" role="alert"></div>
-              <small class="text-muted d-block mt-1">Defaults to the outstanding total on selected products. You may enter any amount from ₱0.01 up to that total; payment is applied to products in sale order (partial payment on the last product is allowed).</small>
+              <small class="text-muted d-block mt-1">Defaults to principal + interest on selected products. Payment applies to interest first, then principal. Later months charge interest on the remaining principal only — e.g. ₱415 + (415 × rate).</small>
             </div>
           </div>
 

@@ -1,5 +1,8 @@
 <script>
 (function () {
+  if (window.__adminLogoutBound) return;
+  window.__adminLogoutBound = true;
+
   function initAdminLogoutConfirm() {
     const logoutBtn = document.getElementById('logoutBtn');
     const logoutForm = document.getElementById('logoutForm');
@@ -10,14 +13,14 @@
       showLogoutConfirmModal();
     });
 
+    function submitLogout() {
+      logoutForm.submit();
+    }
+
     function showLogoutConfirmModal() {
       const modal = document.getElementById('logoutConfirmModal');
-      if (!modal) {
-        if (confirm('Are you sure you want to logout?')) logoutForm.submit();
-        return;
-      }
-      if (typeof bootstrap === 'undefined') {
-        if (confirm('Are you sure you want to logout?')) logoutForm.submit();
+      if (!modal || typeof bootstrap === 'undefined') {
+        if (confirm('Are you sure you want to logout?')) submitLogout();
         return;
       }
 
@@ -36,7 +39,7 @@
           e.preventDefault();
           e.stopPropagation();
           bsModal.hide();
-          setTimeout(function () { logoutForm.submit(); }, 300);
+          setTimeout(submitLogout, 150);
         });
       }
 
@@ -53,7 +56,7 @@
       try {
         bsModal.show();
       } catch (err) {
-        if (confirm('Are you sure you want to logout?')) logoutForm.submit();
+        if (confirm('Are you sure you want to logout?')) submitLogout();
       }
     }
   }

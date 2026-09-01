@@ -136,7 +136,7 @@ class TaxRateAdmin(ImportExportModelAdmin):
         if obj.is_active:
             return format_html(
                 '<span style="'
-                'background:#F58220;color:#fff;padding:2px 8px;border-radius:4px;'
+                'background:#ED1C24;color:#fff;padding:2px 8px;border-radius:4px;'
                 'font-size:0.78rem;font-weight:600;white-space:nowrap;">Enabled</span>'
             )
         return format_html(
@@ -148,7 +148,7 @@ class TaxRateAdmin(ImportExportModelAdmin):
     @admin.display(description='Type', ordering='tax_type')
     def tax_type_badge(self, obj):
         if obj.tax_type == 'inclusive':
-            color, label = '#F58220', 'Inclusive'
+            color, label = '#ED1C24', 'Inclusive'
         else:
             color, label = '#0066cc', 'Exclusive'
         return format_html(
@@ -167,7 +167,7 @@ class TaxRateAdmin(ImportExportModelAdmin):
             f'../product/?tax_rate__id__exact={obj.pk}'
         )
         return format_html(
-            '<a href="{}" style="font-weight:600;color:#F58220;">{} product{}</a>',
+            '<a href="{}" style="font-weight:600;color:#ED1C24;">{} product{}</a>',
             url,
             count,
             's' if count != 1 else '',
@@ -435,6 +435,7 @@ class ProductAdmin(ImportExportModelAdmin):
         'barcode',
         'barcode_image_preview',
         'category',
+        'unit_type',
         'discount_group',
         'tax_rate',
         'price',
@@ -444,7 +445,7 @@ class ProductAdmin(ImportExportModelAdmin):
         'is_low_stock',
         'is_active',
     ]
-    list_filter = ['is_active', 'category', 'discount_group', 'tax_rate']
+    list_filter = ['is_active', 'unit_type', 'category', 'discount_group', 'tax_rate']
     search_fields = ['name', 'barcode']
     autocomplete_fields = ['discount_group', 'tax_rate']
     readonly_fields = ['barcode_image', 'created_at', 'updated_at']
@@ -520,7 +521,7 @@ class ProductAdmin(ImportExportModelAdmin):
             'fields': ('name', 'description', 'barcode', 'category', 'image', 'barcode_image')
         }),
         ('Pricing', {
-            'fields': ('price', 'cost', 'tax_rate', 'discount_group'),
+            'fields': ('price', 'cost', 'unit_type', 'tax_rate', 'discount_group'),
             'description': (
                 'Assign a <strong>Tax rate</strong> to apply VAT or other taxes at checkout '
                 '(managed under Inventory → Tax rates). '
@@ -532,12 +533,13 @@ class ProductAdmin(ImportExportModelAdmin):
         ('Inventory', {
             'fields': ('stock_quantity', 'low_stock_threshold'),
             'description': (
-                '<strong>Stock quantity</strong> is always counted in base pieces (e.g. individual pencils). '
+                '<strong>Stock quantity</strong> is counted in pieces or kilograms, matching <strong>Sold by</strong>. '
                 'Add <strong>Sale units</strong> below for by-piece retail and wholesale box pricing — '
                 'each unit gets its own barcode and price; wholesale deducts '
                 '<em>units per package</em> from stock per box sold. '
+                'Kilogram products do not use wholesale boxes. '
                 'Use <strong>Old / new stock</strong> to split remaining units by price tier. '
-                'Total <em>Stock quantity</em> should match old + new pieces on hand.'
+                'Total <em>Stock quantity</em> should match old + new on hand.'
             ),
         }),
         ('Status', {

@@ -271,7 +271,7 @@ def mobile_login(request):
                                     f'has been locked after {MAX_PIN_ATTEMPTS} failed PIN attempts.\n\n'
                                     f'Please log in to the admin panel to reset their PIN attempts and unlock the account.'
                                 ),
-                                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@genglo.local'),
+                                from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'BAGNOS MPC <noreply@bagnosmpc.local>'),
                                 recipient_list=admin_emails,
                                 fail_silently=True,
                             )
@@ -1150,6 +1150,30 @@ def verify_transfer_otp(request):
     except Exception as email_error:
         logger.warning("Failed to send completion emails: %s", email_error)
 
+    try:
+        from admin_panel.audit import mark_audit_recorded, record_audit
+        actor_user = getattr(member, "user", None)
+        record_audit(
+            "FUND_TRANSFER",
+            actor=actor_user,
+            description=(
+                f"Fund transfer ₱{amount} from {member.full_name} "
+                f"to {recipient.full_name}"
+            ),
+            request=request,
+            object_type="FundTransfer",
+            object_id=sender_txn.id,
+            metadata={
+                "amount": str(amount),
+                "sender": member.full_name,
+                "recipient": recipient.full_name,
+                "notes": otp.notes or "",
+            },
+        )
+        mark_audit_recorded(request)
+    except Exception:
+        pass
+
     return Response({
         'success': True,
         'message': f'Successfully transferred {amount} to {recipient.full_name}',
@@ -1393,6 +1417,20 @@ def my_qr_code(request):
 
     settings = QRFeatureSettings.get_settings()
     qr = MemberQRCode.get_or_create_for_member(member)
+
+    try:
+        from admin_panel.audit import record_audit
+        record_audit(
+            "QR",
+            actor=getattr(member, "user", None),
+            description=f"{member.full_name} generated / viewed QR transfer code",
+            request=request,
+            object_type="MemberQRCode",
+            object_id=getattr(qr, "pk", ""),
+            metadata={"member": member.full_name, "feature_enabled": settings.is_enabled},
+        )
+    except Exception:
+        pass
 
     return Response({
         'success': True,

@@ -30,16 +30,261 @@ from django.db import transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
 PIN_MAX_ATTEMPTS: int = 5          # lockout threshold
 PIN_LENGTH: int = 4
 QR_BOX_SIZE: int = 6
 QR_BORDER: int = 2
+
+
+def parse_member_date_joined(raw, *, default_now=True):
+    """Parse a registration date/time from API or form input.
+
+    Accepts ISO date (``YYYY-MM-DD``) or datetime strings. Returns an aware
+    datetime in the current timezone. When *default_now* is True and *raw* is
+    empty, returns ``timezone.now()``.
+    """
+    from datetime import date, datetime
+
+    if raw in (None, "", "null"):
+        return timezone.now() if default_now else None
+
+    if isinstance(raw, datetime):
+        dt = raw
+    elif isinstance(raw, date):
+        dt = datetime.combine(raw, datetime.min.time())
+    else:
+        text = str(raw).strip()
+        if not text:
+            return timezone.now() if default_now else None
+        parsed = None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                try:
+                    parsed = datetime.strptime(text, fmt)
+                    break
+                except ValueError:
+                    continue
+        if parsed is None:
+            raise ValueError("Invalid registration date format.")
+        dt = parsed
+
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt, timezone.get_current_timezone())
+    return dt
+
+
+INACTIVE_REMARK_MAX_LEN = 500
+
+# Optional co-op profile fields shared by create/update member APIs and forms.
+MEMBER_COMPLETE_DETAIL_CHAR_FIELDS = (
+    "middle_name",
+    "barangay",
+    "municipality",
+    "province",
+    "gender",
+    "tin",
+    "civil_status",
+    "religion",
+    "educational_attainment",
+    "occupation",
+    "coop_type",
+    "area",
+    "membership_status",
+    "location",
+    "rsbsa_remarks",
+    "rsbsa_number",
+    "income_sources",
+    "other_assets",
+    "spouse_name",
+    "spouse_occupation",
+    "resolution_number",
+    "or_number",
+    "mf_center",
+)
+
+MEMBER_COMPLETE_DETAIL_DATE_FIELDS = (
+    "date_of_birth",
+    "date_of_pmes",
+    "date_accepted",
+    "date_of_mf_recog",
+)
+
+MEMBER_COMPLETE_DETAIL_DECIMAL_FIELDS = (
+    "annual_income",
+    "initial_capital_paid_up",
+)
+
+
+def parse_optional_date(raw):
+    """Parse ``YYYY-MM-DD`` (or ISO datetime) into a ``date``, or ``None`` if empty."""
+    from datetime import date, datetime
+
+    if raw in (None, "", "null"):
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError("Invalid date format. Use YYYY-MM-DD.") from exc
+
+
+def parse_optional_decimal(raw, *, field_label="Value"):
+    """Parse an optional decimal; empty → ``None``. Raises ``ValueError`` on bad input."""
+    from decimal import Decimal, InvalidOperation
+
+    if raw in (None, "", "null"):
+        return None
+    try:
+        value = Decimal(str(raw).strip())
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {field_label}.") from exc
+    if value < 0:
+        raise ValueError(f"{field_label} cannot be negative.")
+    return value
+
+
+def parse_optional_age(raw):
+    """Parse optional age integer; empty → ``None``."""
+    if raw in (None, "", "null"):
+        return None
+    try:
+        age = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid age.") from exc
+    if age < 0 or age > 150:
+        raise ValueError("Age must be between 0 and 150.")
+    return age
+
+
+def extract_member_complete_details(data: dict) -> tuple[dict | None, str | None]:
+    """
+    Pull complete-detail fields from an API payload.
+
+    Returns ``(fields_dict, error)``. On success *fields_dict* is ready to
+    ``setattr`` / ``Member.objects.create(**fields)``.
+    """
+    if not isinstance(data, dict):
+        return {}, None
+
+    out: dict = {}
+    for name in MEMBER_COMPLETE_DETAIL_CHAR_FIELDS:
+        if name not in data:
+            continue
+        out[name] = (data.get(name) or "").strip() if data.get(name) is not None else ""
+
+    for name in MEMBER_COMPLETE_DETAIL_DATE_FIELDS:
+        if name not in data:
+            continue
+        try:
+            out[name] = parse_optional_date(data.get(name))
+        except ValueError as exc:
+            return None, str(exc)
+
+    for name in MEMBER_COMPLETE_DETAIL_DECIMAL_FIELDS:
+        if name not in data:
+            continue
+        label = name.replace("_", " ")
+        try:
+            out[name] = parse_optional_decimal(data.get(name), field_label=label)
+        except ValueError as exc:
+            return None, str(exc)
+
+    if "age" in data:
+        try:
+            out["age"] = parse_optional_age(data.get("age"))
+        except ValueError as exc:
+            return None, str(exc)
+
+    return out, None
+
+
+def apply_member_complete_details(member, fields: dict) -> None:
+    """Apply parsed complete-detail fields onto a Member instance (no save)."""
+    if not fields:
+        return
+    for key, value in fields.items():
+        setattr(member, key, value)
+    if getattr(member, "date_of_birth", None):
+        member.sync_age_from_dob()
+    # Keep MemberStatus FK in sync when a status label/slug is posted.
+    status_label = (fields.get("membership_status") or "").strip()
+    if status_label:
+        from members.models import MemberStatus
+
+        status = (
+            MemberStatus.objects.filter(name__iexact=status_label).first()
+            or MemberStatus.objects.filter(slug__iexact=status_label).first()
+        )
+        if status:
+            member.apply_member_status(status, deactivate=None)
+
+
+def member_complete_details_dict(member) -> dict:
+    """Serialize complete-detail fields for edit forms / JSON."""
+    def _d(value):
+        return value.isoformat() if value else ""
+
+    def _dec(value):
+        return str(value) if value is not None else ""
+
+    return {
+        "middle_name": member.middle_name or "",
+        "barangay": member.barangay or "",
+        "municipality": member.municipality or "",
+        "province": member.province or "",
+        "date_of_birth": _d(member.date_of_birth),
+        "gender": member.gender or "",
+        "tin": member.tin or "",
+        "age": member.age if member.age is not None else (member.compute_age() or ""),
+        "civil_status": member.civil_status or "",
+        "religion": member.religion or "",
+        "educational_attainment": member.educational_attainment or "",
+        "occupation": member.occupation or "",
+        "coop_type": member.coop_type or "",
+        "area": member.area or "",
+        "membership_status": member.membership_status or "",
+        "location": member.location or "",
+        "rsbsa_remarks": member.rsbsa_remarks or "",
+        "rsbsa_number": member.rsbsa_number or "",
+        "income_sources": member.income_sources or "",
+        "annual_income": _dec(member.annual_income),
+        "other_assets": member.other_assets or "",
+        "spouse_name": member.spouse_name or "",
+        "spouse_occupation": member.spouse_occupation or "",
+        "date_of_pmes": _d(member.date_of_pmes),
+        "resolution_number": member.resolution_number or "",
+        "date_accepted": _d(member.date_accepted),
+        "or_number": member.or_number or "",
+        "initial_capital_paid_up": _dec(member.initial_capital_paid_up),
+        "date_of_mf_recog": _d(member.date_of_mf_recog),
+        "mf_center": member.mf_center or "",
+    }
+
+
+def resolve_inactive_remark(is_active, remark_raw) -> tuple[str | None, str | None]:
+    """Return ``(remark, error)``. Active members always store an empty remark."""
+    remark = (remark_raw or "").strip()
+    if is_active:
+        return "", None
+    if not remark:
+        return None, "Please enter a remark explaining why this member is inactive."
+    if len(remark) > INACTIVE_REMARK_MAX_LEN:
+        return None, f"Remark must be {INACTIVE_REMARK_MAX_LEN} characters or less."
+    return remark, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -467,6 +712,7 @@ def member_to_dict(member, include_sensitive: bool = False) -> dict:
         "id": member.pk,
         "full_name": member.full_name,
         "first_name": member.first_name,
+        "middle_name": member.middle_name or "",
         "last_name": member.last_name,
         "email": member.email,
         "phone": member.phone,
@@ -474,6 +720,7 @@ def member_to_dict(member, include_sensitive: bool = False) -> dict:
         "role": member.role,
         "balance": float(member.balance),
         "is_active": member.is_active,
+        "inactive_remark": member.inactive_remark or "",
         "member_type": member.member_type.name if member.member_type else None,
         "username": member.user.username if member.user else None,
         "date_joined": member.date_joined.isoformat() if member.date_joined else None,
@@ -481,6 +728,7 @@ def member_to_dict(member, include_sensitive: bool = False) -> dict:
         "pin_set": bool(member.pin_hash),
         "is_pin_locked": member.is_pin_locked,
     }
+    data.update(member_complete_details_dict(member))
     if include_sensitive:
         data["pin_attempts"] = member.pin_attempts
     return data
