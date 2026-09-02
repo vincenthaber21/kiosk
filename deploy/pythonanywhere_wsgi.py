@@ -22,7 +22,12 @@ os.environ['ALLOWED_HOSTS'] = 'dtikiosk.pythonanywhere.com'
 # CHANGE ME: at least 50 random characters
 os.environ['DJANGO_SECRET_KEY'] = 'replace-with-a-long-random-secret-key'
 
-# CHANGE ME: your MySQL connection string for PythonAnywhere
+# SQLite (no MySQL DATABASE_URL needed)
+os.environ['USE_SQLITE'] = 'true'
+# Optional custom path (default: /home/dtikiosk/kiosk/db.sqlite3)
+# os.environ['SQLITE_DB_PATH'] = '/home/dtikiosk/kiosk/db.sqlite3'
+
+# For MySQL on PythonAnywhere instead, remove USE_SQLITE and set:
 # os.environ['DATABASE_URL'] = 'mysql://dtikiosk:YOUR_DB_PASSWORD@dtikiosk.mysql.pythonanywhere-services.com/dtikiosk$default'
 
 # Optional: email (uses defaults from settings.py if omitted)

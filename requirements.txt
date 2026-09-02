@@ -9,6 +9,7 @@ django-crispy-forms>=2.5
 crispy-bootstrap5>=2025.6
 django-widget-tweaks>=1.5.0
 django-import-export>=4.0
+django-fsm-2>=4.0
 
 # Database drivers
 # Use PyMySQL as a drop-in replacement for mysqlclient (MySQL/MariaDB)

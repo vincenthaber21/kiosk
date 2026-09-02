@@ -9,6 +9,7 @@ or:
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 
@@ -229,9 +230,10 @@ class TestGetLoggingConfig(unittest.TestCase):
     def test_production_adds_file_handlers(self):
         from helper.settings_helper import get_logging_config
         with patch.dict(os.environ, {'PRODUCTION': 'true'}, clear=False):
-            config = get_logging_config()
+            config = get_logging_config(base_dir=Path('/tmp/kiosk-test'))
         self.assertIn('file', config['handlers'])
         self.assertIn('error_file', config['handlers'])
+        self.assertIn('/tmp/kiosk-test/logs/errors.log', config['handlers']['error_file']['filename'])
 
     def test_custom_log_level_respected(self):
         from helper.settings_helper import get_logging_config

@@ -40,6 +40,7 @@ from helper.settings_helper import (
     get_rate_limiting_settings,
     get_allowed_hosts,
     get_static_files_settings,
+    get_sqlite_database_config,
 )
 
 
@@ -134,11 +135,14 @@ WSGI_APPLICATION = 'coop_kiosk.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-# Database — if DATABASE_URL env var is set (production) settings_helper is used;
-# otherwise falls back to explicit local MySQL config.
+# Database — DATABASE_URL for MySQL/Postgres; USE_SQLITE=true for SQLite (PythonAnywhere).
 _database_url = os.environ.get('DATABASE_URL')
+_use_sqlite = os.environ.get('USE_SQLITE', '').lower() == 'true'
+
 if _database_url:
     DATABASES = get_secure_database_config(db_url=_database_url)
+elif _use_sqlite:
+    DATABASES = get_sqlite_database_config(BASE_DIR)
 else:
     DATABASES = {
         'default': {
@@ -304,7 +308,7 @@ DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
 # We don't set Connection headers in WSGI responses (they're hop-by-hop headers).
 
 # Logging — via settings_helper (dev: console only; prod: adds rotating file handlers)
-LOGGING = get_logging_config()
+LOGGING = get_logging_config(base_dir=BASE_DIR)
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')

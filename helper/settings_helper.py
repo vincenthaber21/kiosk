@@ -99,19 +99,28 @@ def get_secure_database_config(db_url: str = None) -> Dict[str, Any]:
         
         return {'default': config}
     else:
-        # Development SQLite with optimizations
-        return {
-            'default': {
-                'ENGINE': 'django.db.backends.sqlite3',
-                'NAME': 'db.sqlite3',
-                'OPTIONS': {
-                    'timeout': 20,
-                    'journal_mode': 'WAL',  # Write-Ahead Logging for better concurrency
-                    'cache_size': -20000,   # 20MB cache
-                },
-                'CONN_MAX_AGE': 300,  # Reuse connections for 5 minutes
-            }
+        return get_sqlite_database_config()
+
+
+def get_sqlite_database_config(base_dir: Path = None) -> Dict[str, Any]:
+    """SQLite database config for local dev and PythonAnywhere deployments."""
+    db_path = os.environ.get('SQLITE_DB_PATH')
+    if db_path:
+        name = db_path
+    elif base_dir is not None:
+        name = str(base_dir / 'db.sqlite3')
+    else:
+        name = 'db.sqlite3'
+
+    return {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': name,
+            'OPTIONS': {
+                'timeout': 20,
+            },
         }
+    }
 
 # ============================================================================
 # SECURITY ENHANCEMENTS
@@ -316,9 +325,13 @@ def dev_server_operator_hints() -> str:
     )
 
 
-def get_logging_config(log_level: str = None) -> Dict[str, Any]:
+def get_logging_config(log_level: str = None, base_dir: Path = None) -> Dict[str, Any]:
     """
     Get comprehensive logging configuration.
+
+    ``base_dir`` should be Django's BASE_DIR so log files are written under
+    ``<project>/logs/`` regardless of the process working directory (required
+    on PythonAnywhere and other WSGI hosts).
     """
     is_production = os.environ.get('PRODUCTION', 'False').lower() == 'true'
     log_level = log_level or os.environ.get('LOG_LEVEL', 'INFO' if is_production else 'DEBUG')
@@ -332,34 +345,46 @@ def get_logging_config(log_level: str = None) -> Dict[str, Any]:
     }
     
     # Add file logging in production
+    file_handlers_enabled = False
     if is_production:
-        handlers.update({
-            'file': {
-                'class': 'logging.handlers.RotatingFileHandler',
-                'filename': 'logs/django.log',
-                'maxBytes': 10 * 1024 * 1024,  # 10 MB
-                'backupCount': 10,
-                'formatter': 'verbose',
-                'level': 'WARNING',
-            },
-            'error_file': {
-                'class': 'logging.handlers.RotatingFileHandler',
-                'filename': 'logs/errors.log',
-                'maxBytes': 10 * 1024 * 1024,
-                'backupCount': 30,
-                'formatter': 'verbose',
-                'level': 'ERROR',
-            },
-            'mobile_api_file': {
-                'class': 'logging.handlers.RotatingFileHandler',
-                'filename': 'logs/mobile_api.log',
-                'maxBytes': 5 * 1024 * 1024,  # 5 MB
-                'backupCount': 5,
-                'formatter': 'verbose',
-                'level': 'INFO',
-            },
-        })
+        log_dir = (Path(base_dir) / 'logs') if base_dir is not None else Path('logs')
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_handlers_enabled = True
+        except OSError:
+            file_handlers_enabled = False
+
+        if file_handlers_enabled:
+            handlers.update({
+                'file': {
+                    'class': 'logging.handlers.RotatingFileHandler',
+                    'filename': str(log_dir / 'django.log'),
+                    'maxBytes': 10 * 1024 * 1024,  # 10 MB
+                    'backupCount': 10,
+                    'formatter': 'verbose',
+                    'level': 'WARNING',
+                },
+                'error_file': {
+                    'class': 'logging.handlers.RotatingFileHandler',
+                    'filename': str(log_dir / 'errors.log'),
+                    'maxBytes': 10 * 1024 * 1024,
+                    'backupCount': 30,
+                    'formatter': 'verbose',
+                    'level': 'ERROR',
+                },
+                'mobile_api_file': {
+                    'class': 'logging.handlers.RotatingFileHandler',
+                    'filename': str(log_dir / 'mobile_api.log'),
+                    'maxBytes': 5 * 1024 * 1024,  # 5 MB
+                    'backupCount': 5,
+                    'formatter': 'verbose',
+                    'level': 'INFO',
+                },
+            })
     
+    production_file_handlers = ['console', 'error_file'] if file_handlers_enabled else ['console']
+    mobile_api_handlers = ['console', 'mobile_api_file'] if file_handlers_enabled else ['console']
+
     return {
         'version': 1,
         'disable_existing_loggers': False,
@@ -389,7 +414,7 @@ def get_logging_config(log_level: str = None) -> Dict[str, Any]:
                 'propagate': False,
             },
             'django.request': {
-                'handlers': ['console', 'error_file'] if is_production else ['console'],
+                'handlers': production_file_handlers,
                 'level': 'WARNING',
                 'propagate': False,
             },
@@ -413,7 +438,7 @@ def get_logging_config(log_level: str = None) -> Dict[str, Any]:
                 'propagate': False,
             },
             'mobile_api': {
-                'handlers': ['console', 'mobile_api_file'] if is_production else ['console'],
+                'handlers': mobile_api_handlers if is_production else ['console'],
                 'level': log_level,
                 'propagate': False,
             },
@@ -668,7 +693,9 @@ def apply_settings(settings_module):
     settings_module.update(get_performance_settings())
     
     # Logging
-    settings_module.LOGGING = get_logging_config()
+    settings_module.LOGGING = get_logging_config(
+        base_dir=getattr(settings_module, 'BASE_DIR', None),
+    )
     
     # Hosts & CORS
     settings_module.ALLOWED_HOSTS = get_allowed_hosts()
