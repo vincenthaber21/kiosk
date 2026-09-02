@@ -38,6 +38,8 @@ from helper.settings_helper import (
     get_logging_config,
     get_cors_settings,
     get_rate_limiting_settings,
+    get_allowed_hosts,
+    get_static_files_settings,
 )
 
 
@@ -45,12 +47,16 @@ from helper.settings_helper import (
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SESSION_SECRET', 'django-insecure-7oua%&pbjg344oj597*jt@8avam@_w32=89jm9^uj5k^2y#0g!')
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    os.environ.get('SESSION_SECRET', 'django-insecure-7oua%&pbjg344oj597*jt@8avam@_w32=89jm9^uj5k^2y#0g!'),
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+IS_PRODUCTION = os.environ.get('PRODUCTION', 'False').lower() == 'true'
+DEBUG = os.environ.get('DEBUG', 'False' if IS_PRODUCTION else 'True').lower() == 'true'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = get_allowed_hosts()
 
 
 # Application definition
@@ -84,6 +90,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'mobile_api.middleware.MobileAPICSRFExemptMiddleware',  # Bypass CSRF for all /api/mobile/ endpoints
     'mobile_api.middleware.ConnectionOptimizationMiddleware',  # Connection optimization for mobile API
@@ -267,8 +274,22 @@ globals().update(get_secure_csrf_settings())
 
 # Production security headers — via settings_helper (no-op when PRODUCTION != 'true')
 globals().update(get_security_middleware_settings())
-SECURE_SSL_REDIRECT = False  # Override: no HTTPS redirect in development
+if not IS_PRODUCTION:
+    SECURE_SSL_REDIRECT = False  # Override: no HTTPS redirect in development
 USE_TZ = True
+
+# Static files — WhiteNoise serves /static/ when DEBUG=False (PythonAnywhere, etc.)
+globals().update(get_static_files_settings())
+
+# Trust HTTPS (and HTTP in dev) origins derived from ALLOWED_HOSTS
+_csrf_origins = list(globals().get('CSRF_TRUSTED_ORIGINS', []))
+for _host in ALLOWED_HOSTS:
+    if _host and _host != '*':
+        for _scheme in ('https', 'http'):
+            _origin = f'{_scheme}://{_host}'
+            if _origin not in _csrf_origins:
+                _csrf_origins.append(_origin)
+CSRF_TRUSTED_ORIGINS = _csrf_origins
 
 # Connection settings for mobile API pipeline tunnel
 # These settings optimize connections for mobile app users

@@ -1,5 +1,6 @@
 # Core framework
 Django>=5.1
+whitenoise>=6.6.0
 
 # Django extensions
 djangorestframework>=3.16.1

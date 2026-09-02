@@ -240,12 +240,11 @@ class TestGetLoggingConfig(unittest.TestCase):
 
 
 class TestGetAllowedHosts(unittest.TestCase):
-    def test_defaults_to_localhost(self):
+    def test_defaults_to_wildcard_in_development(self):
         from helper.settings_helper import get_allowed_hosts
         with patch.dict(os.environ, {}, clear=True):
             hosts = get_allowed_hosts()
-        self.assertIn('localhost', hosts)
-        self.assertIn('127.0.0.1', hosts)
+        self.assertEqual(hosts, ['*'])
 
     def test_env_var_overrides_defaults(self):
         from helper.settings_helper import get_allowed_hosts

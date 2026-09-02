@@ -472,10 +472,38 @@ def get_allowed_hosts() -> List[str]:
     production_hosts = os.environ.get('ALLOWED_HOSTS', '')
     
     if production_hosts:
-        return [host.strip() for host in production_hosts.split(',')]
+        return [host.strip() for host in production_hosts.split(',') if host.strip()]
     
-    # Safe defaults for development
-    return ['localhost', '127.0.0.1']
+    is_production = os.environ.get('PRODUCTION', 'False').lower() == 'true'
+    if is_production:
+        return []
+    
+    return ['*']
+
+
+def get_static_files_settings() -> Dict[str, Any]:
+    """
+    WhiteNoise static file settings for production deployments (e.g. PythonAnywhere).
+    """
+    is_production = os.environ.get('PRODUCTION', 'False').lower() == 'true'
+    debug = os.environ.get('DEBUG', 'False' if is_production else 'True').lower() == 'true'
+
+    settings: Dict[str, Any] = {
+        'WHITENOISE_USE_FINDERS': debug,
+        'WHITENOISE_AUTOREFRESH': debug,
+    }
+
+    if is_production or not debug:
+        settings['STORAGES'] = {
+            'default': {
+                'BACKEND': 'django.core.files.storage.FileSystemStorage',
+            },
+            'staticfiles': {
+                'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+            },
+        }
+
+    return settings
 
 def get_cors_settings() -> Dict[str, Any]:
     """
